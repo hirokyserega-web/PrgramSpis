@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using ScreenMind.AI;
 using ScreenMind.Core.Ai;
+using ScreenMind.Core.Imaging;
 using ScreenMind.Core.Privacy;
 
 namespace ScreenMind.Providers.OpenAICompatible;
@@ -59,9 +60,15 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
             httpRequest.Headers.TryAddWithoutValidation("Cookie", qwenCookie);
         }
 
+        object? uploadedFile = null;
+        if (IsQwenProxyUri(configuration.BaseUri) && HasRealImage(request))
+        {
+            uploadedFile = await UploadImageToProxyAsync(configuration.BaseUri, request.Image, qwenCookie, cancellationToken).ConfigureAwait(false);
+        }
+
         httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         httpRequest.Content = new StringContent(
-            JsonSerializer.Serialize(BuildBody(request, configuration.ModelId)),
+            JsonSerializer.Serialize(BuildBody(request, configuration.ModelId, uploadedFile)),
             Encoding.UTF8,
             "application/json");
 
@@ -197,62 +204,137 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
             cancellationToken);
     }
 
-    private static object BuildBody(AiRequest request, string modelId)
+    private static object[] BuildMessages(AiRequest request, object? uploadedFile = null)
     {
-        bool isPlaceholder = !HasRealImage(request);
-        string effectiveModelId = GetEffectiveModelId(request, modelId);
-        object userContent;
+        var messagesList = new List<object>();
 
-        if (isPlaceholder)
+        // System prompt
+        if (!string.IsNullOrWhiteSpace(request.Profile.SystemPrompt))
         {
-            userContent = new object[]
+            messagesList.Add(new
             {
-                new
+                role = "system",
+                content = request.Profile.SystemPrompt
+            });
+        }
+
+        // Historical messages
+        if (request.SessionMessages is not null)
+        {
+            foreach (var msg in request.SessionMessages)
+            {
+                if (msg.Role == AiMessageRole.User)
                 {
-                    type = "text",
-                    text = request.Question,
+                    if (msg.Image is not null && (msg.Image.Width != 1 || msg.Image.Height != 1))
+                    {
+                        string imageData = Convert.ToBase64String(msg.Image.Bytes.Span);
+                        messagesList.Add(new
+                        {
+                            role = "user",
+                            content = new object[]
+                            {
+                                new { type = "text", text = msg.Content },
+                                new { type = "image_url", image_url = new { url = $"data:{msg.Image.MediaType};base64,{imageData}" } }
+                            }
+                        });
+                    }
+                    else
+                    {
+                        messagesList.Add(new
+                        {
+                            role = "user",
+                            content = msg.Content
+                        });
+                    }
                 }
-            };
+                else if (msg.Role == AiMessageRole.Assistant)
+                {
+                    messagesList.Add(new
+                    {
+                        role = "assistant",
+                        content = msg.Content
+                    });
+                }
+            }
+        }
+
+        // Current message
+        if (uploadedFile is not null)
+        {
+            messagesList.Add(new
+            {
+                role = "user",
+                content = request.Question,
+                files = new object[] { uploadedFile }
+            });
         }
         else
         {
-            string imageData = Convert.ToBase64String(request.Image.Bytes.Span);
-            userContent = new object[]
+            bool currentHasImage = request.Image is not null && (request.Image.Width != 1 || request.Image.Height != 1);
+            if (currentHasImage && request.Image is not null)
             {
-                new
-                {
-                    type = "text",
-                    text = request.Question,
-                },
-                new
-                {
-                    type = "image_url",
-                    image_url = new
-                    {
-                        url = $"data:{request.Image.MediaType};base64,{imageData}",
-                    },
-                },
-            };
-        }
-
-        return new
-        {
-            model = effectiveModelId,
-            stream = true,
-            messages = new object[]
-            {
-                new
-                {
-                    role = "system",
-                    content = request.Profile.SystemPrompt,
-                },
-                new
+                string imageData = Convert.ToBase64String(request.Image.Bytes.Span);
+                messagesList.Add(new
                 {
                     role = "user",
-                    content = userContent,
-                },
-            },
+                    content = new object[]
+                    {
+                        new { type = "text", text = request.Question },
+                        new { type = "image_url", image_url = new { url = $"data:{request.Image.MediaType};base64,{imageData}" } }
+                    }
+                });
+            }
+            else
+            {
+                messagesList.Add(new
+                {
+                    role = "user",
+                    content = request.Question
+                });
+            }
+        }
+
+        return messagesList.ToArray();
+    }
+
+    private static Dictionary<string, object> BuildBody(AiRequest request, string modelId, object? uploadedFile = null)
+    {
+        string effectiveModelId = GetEffectiveModelId(request, modelId);
+        object[] messages = BuildMessages(request, uploadedFile);
+
+        if (!string.IsNullOrWhiteSpace(request.SessionId))
+        {
+            var bodyObj = new Dictionary<string, object>
+            {
+                { "model", effectiveModelId },
+                { "stream", true },
+                { "chatId", request.SessionId },
+                { "chat_id", request.SessionId },
+                { "conversation_id", request.SessionId },
+                { "messages", messages }
+            };
+
+            if (uploadedFile is not null)
+            {
+                bodyObj["files"] = new object[] { uploadedFile };
+            }
+
+            return bodyObj;
+        }
+
+        var defaultBodyObj = new Dictionary<string, object>
+        {
+            { "model", effectiveModelId },
+            { "stream", true },
+            { "messages", messages }
         };
+
+        if (uploadedFile is not null)
+        {
+            defaultBodyObj["files"] = new object[] { uploadedFile };
+        }
+
+        return defaultBodyObj;
     }
 
     private static string GetEffectiveModelId(AiRequest request, string modelId)
@@ -273,7 +355,8 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
         return modelId.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)
             && !modelId.Contains("-vl", StringComparison.OrdinalIgnoreCase)
             && !modelId.Contains("vision", StringComparison.OrdinalIgnoreCase)
-            && !modelId.Contains("omni", StringComparison.OrdinalIgnoreCase);
+            && !modelId.Contains("omni", StringComparison.OrdinalIgnoreCase)
+            && !modelId.Contains("3.7", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsDeepseekModel(string modelId)
@@ -377,5 +460,62 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
             document = null;
             return false;
         }
+    }
+
+    private async Task<object?> UploadImageToProxyAsync(
+        Uri baseUri,
+        ScreenImage image,
+        string? qwenCookie,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            Uri uploadUri = baseUri.ToString().EndsWith('/')
+                ? new Uri(baseUri, "files/upload")
+                : new Uri(new Uri(baseUri.ToString() + "/"), "files/upload");
+
+            using HttpRequestMessage httpRequest = new(HttpMethod.Post, uploadUri);
+            if (!string.IsNullOrWhiteSpace(qwenCookie))
+            {
+                httpRequest.Headers.TryAddWithoutValidation("Cookie", qwenCookie);
+            }
+
+            using MultipartFormDataContent form = new();
+            using ByteArrayContent fileContent = new(image.Bytes.ToArray());
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue(image.MediaType);
+            
+            string extension = image.Format == ScreenImageFormat.Png ? "png" : "jpg";
+            string filename = $"screenshot_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{extension}";
+            
+            form.Add(fileContent, "file", filename);
+            httpRequest.Content = form;
+
+            using HttpResponseMessage response = await httpClient.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+            {
+                string jsonString = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                using JsonDocument doc = JsonDocument.Parse(jsonString);
+                JsonElement root = doc.RootElement;
+                if (root.TryGetProperty("success", out JsonElement successProp) && successProp.GetBoolean()
+                    && root.TryGetProperty("file", out JsonElement fileProp))
+                {
+                    return new
+                    {
+                        id = fileProp.GetProperty("id").GetString(),
+                        fileId = fileProp.GetProperty("fileId").GetString(),
+                        file_path = fileProp.GetProperty("file_path").GetString(),
+                        name = fileProp.GetProperty("name").GetString(),
+                        url = fileProp.GetProperty("url").GetString(),
+                        size = fileProp.GetProperty("size").GetInt64(),
+                        type = fileProp.GetProperty("type").GetString()
+                    };
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[OpenAiCompatibleProvider] OSS upload failed: {ex}");
+        }
+        return null;
     }
 }

@@ -141,35 +141,73 @@ public sealed class GeminiProvider : IAiProvider
         }
     }
 
-    private static object BuildBody(AiRequest request)
+    private static object[] BuildContents(AiRequest request)
     {
-        bool isPlaceholder = request.Image.Width == 1 && request.Image.Height == 1;
-        object userParts;
+        var contentsList = new List<object>();
 
-        if (isPlaceholder)
+        // Historical messages
+        if (request.SessionMessages is not null)
         {
-            userParts = new object[]
+            foreach (var msg in request.SessionMessages)
             {
-                new { text = request.Question },
-            };
+                if (msg.Role == AiMessageRole.User)
+                {
+                    var parts = new List<object> { new { text = msg.Content } };
+                    if (msg.Image is not null && (msg.Image.Width != 1 || msg.Image.Height != 1))
+                    {
+                        string imageData = Convert.ToBase64String(msg.Image.Bytes.Span);
+                        parts.Add(new
+                        {
+                            inlineData = new
+                            {
+                                mimeType = msg.Image.MediaType,
+                                data = imageData,
+                            }
+                        });
+                    }
+                    contentsList.Add(new
+                    {
+                        role = "user",
+                        parts = parts.ToArray()
+                    });
+                }
+                else if (msg.Role == AiMessageRole.Assistant)
+                {
+                    contentsList.Add(new
+                    {
+                        role = "model",
+                        parts = new object[] { new { text = msg.Content } }
+                    });
+                }
+            }
         }
-        else
+
+        // Current message
+        var currentParts = new List<object> { new { text = request.Question } };
+        bool currentHasImage = request.Image is not null && (request.Image.Width != 1 || request.Image.Height != 1);
+        if (currentHasImage && request.Image is not null)
         {
             string imageData = Convert.ToBase64String(request.Image.Bytes.Span);
-            userParts = new object[]
+            currentParts.Add(new
             {
-                new { text = request.Question },
-                new
+                inlineData = new
                 {
-                    inlineData = new
-                    {
-                        mimeType = request.Image.MediaType,
-                        data = imageData,
-                    },
-                },
-            };
+                    mimeType = request.Image.MediaType,
+                    data = imageData,
+                }
+            });
         }
+        contentsList.Add(new
+        {
+            role = "user",
+            parts = currentParts.ToArray()
+        });
 
+        return contentsList.ToArray();
+    }
+
+    private static object BuildBody(AiRequest request)
+    {
         return new
         {
             systemInstruction = new
@@ -179,14 +217,7 @@ public sealed class GeminiProvider : IAiProvider
                     new { text = request.Profile.SystemPrompt },
                 },
             },
-            contents = new object[]
-            {
-                new
-                {
-                    role = "user",
-                    parts = userParts,
-                },
-            },
+            contents = BuildContents(request),
         };
     }
 

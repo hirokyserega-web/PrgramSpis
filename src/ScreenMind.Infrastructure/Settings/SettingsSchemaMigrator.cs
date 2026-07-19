@@ -32,6 +32,17 @@ public static class SettingsSchemaMigrator
         normalized.ManagedProxies.GlmKimi ??= new ManagedProxyItem { Port = 3265 };
         normalized.Profiles.Items ??= [];
 
+        normalized.Ui.OverlayOpacity = ClampFinite(
+            normalized.Ui.OverlayOpacity,
+            UiSettings.MinOverlayOpacity,
+            UiSettings.MaxOverlayOpacity,
+            0.96d);
+        normalized.Ui.UiScale = ClampFinite(
+            normalized.Ui.UiScale,
+            UiSettings.MinUiScale,
+            UiSettings.MaxUiScale,
+            1d);
+
         if (normalized.ManagedProxies.Qwen.Port <= 0)
         {
             normalized.ManagedProxies.Qwen.Port = 3264;
@@ -93,5 +104,15 @@ public static class SettingsSchemaMigrator
                 profiles.Items.Add(defaultProfile);
             }
         }
+    }
+
+    private static double ClampFinite(double value, double min, double max, double fallback)
+    {
+        if (!double.IsFinite(value) || value <= 0d)
+        {
+            return fallback;
+        }
+
+        return Math.Clamp(value, min, max);
     }
 }

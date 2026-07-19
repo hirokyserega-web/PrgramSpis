@@ -12,8 +12,10 @@ internal sealed class MarkdownMessageView : StackPanel
     private static readonly IBrush TextBrush = new SolidColorBrush(Color.Parse("#E8ECF7"));
     private static readonly IBrush MutedBrush = new SolidColorBrush(Color.Parse("#9AA4BC"));
     private static readonly IBrush AccentBrush = new SolidColorBrush(Color.Parse("#A7B4FF"));
-    private static readonly IBrush CodeBackground = new SolidColorBrush(Color.Parse("#0B1020"));
-    private static readonly IBrush CodeBorder = new SolidColorBrush(Color.Parse("#29324D"));
+    // Semi-transparent so streaming markdown does not paint the chat solid.
+    private static readonly IBrush CodeBackground = new SolidColorBrush(Color.FromArgb(120, 11, 16, 32));
+    private static readonly IBrush CodeBorder = new SolidColorBrush(Color.FromArgb(100, 41, 50, 77));
+    private static readonly IBrush QuoteBackground = new SolidColorBrush(Color.FromArgb(70, 21, 28, 49));
 
     public MarkdownMessageView(string markdown)
     {
@@ -89,9 +91,12 @@ internal sealed class MarkdownMessageView : StackPanel
         {
             Children.Add(new Border
             {
-                Background = new SolidColorBrush(Color.Parse("#151C31")), BorderBrush = AccentBrush,
-                BorderThickness = new Thickness(3, 0, 0, 0), CornerRadius = new CornerRadius(3),
-                Padding = new Thickness(12, 8), Child = CreateRichText(trimmed[2..], 13, FontWeight.Normal, MutedBrush),
+                Background = QuoteBackground,
+                BorderBrush = AccentBrush,
+                BorderThickness = new Thickness(3, 0, 0, 0),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(12, 8),
+                Child = CreateRichText(trimmed[2..], 13, FontWeight.Normal, MutedBrush),
             });
             return true;
         }

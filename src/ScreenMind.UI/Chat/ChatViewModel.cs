@@ -14,7 +14,7 @@ using ScreenMind.Core.State;
 
 namespace ScreenMind.UI.Chat;
 
-public sealed partial class ChatViewModel : ObservableObject
+public sealed partial class ChatViewModel : ObservableObject, IDisposable
 {
     private static readonly TimeSpan StreamUiUpdateInterval = TimeSpan.FromMilliseconds(50);
 
@@ -38,7 +38,18 @@ public sealed partial class ChatViewModel : ObservableObject
     private string monitorHotkeyText = string.Empty;
 
     [ObservableProperty]
+    private string cleanChatHotkeyText = string.Empty;
+
+    [ObservableProperty]
+    private string clickThroughHotkeyText = string.Empty;
+
+    [ObservableProperty]
+    private string emergencyExitHotkeyText = string.Empty;
+
+    [ObservableProperty]
     private ChatSession? activeSession;
+
+    private CancellationTokenSource? activeCancellationTokenSource;
 
     [ObservableProperty]
     private string inputText = string.Empty;
@@ -58,7 +69,25 @@ public sealed partial class ChatViewModel : ObservableObject
     private double overlayOpacity = 0.96d;
 
     [ObservableProperty]
+    private double uiScale = 1d;
+
+    [ObservableProperty]
     private bool alwaysOnTop = true;
+
+    [ObservableProperty]
+    private bool showConsole;
+
+    [ObservableProperty]
+    private bool hideSidebar;
+
+    /// <summary>
+    /// When true, chat shows only user messages and AI replies (no sidebar/status chrome).
+    /// </summary>
+    [ObservableProperty]
+    private bool cleanChatMode;
+
+    [ObservableProperty]
+    private bool clickThroughMode;
 
     [ObservableProperty]
     private string systemPrompt = string.Empty;
@@ -77,6 +106,27 @@ public sealed partial class ChatViewModel : ObservableObject
 
     [ObservableProperty]
     private string defaultPrompt = string.Empty;
+
+    [ObservableProperty]
+    private bool keepSessionHistory;
+
+    [ObservableProperty]
+    private string prompt1HotkeyText = string.Empty;
+
+    [ObservableProperty]
+    private string promptText1 = string.Empty;
+
+    [ObservableProperty]
+    private string prompt2HotkeyText = string.Empty;
+
+    [ObservableProperty]
+    private string promptText2 = string.Empty;
+
+    [ObservableProperty]
+    private string prompt3HotkeyText = string.Empty;
+
+    [ObservableProperty]
+    private string promptText3 = string.Empty;
 
     [ObservableProperty]
     private string errorMessage = string.Empty;
@@ -231,9 +281,13 @@ public sealed partial class ChatViewModel : ObservableObject
         this.proxyManager = proxyManager ?? throw new ArgumentNullException(nameof(proxyManager));
 
         ActiveSession = sessionManager.CurrentSession;
+        foreach (var s in sessionManager.Sessions)
+        {
+            Sessions.Add(s);
+        }
     }
 
-    public ObservableCollection<ChatSession> Sessions => new(sessionManager.Sessions);
+    public ObservableCollection<ChatSession> Sessions { get; } = new();
 
     public IReadOnlyList<AiMessage> ActiveMessages =>
         ActiveSession is not null
@@ -348,8 +402,13 @@ public sealed partial class ChatViewModel : ObservableObject
                 models.Add("custom");
                 break;
             case "qwen":
+                models.Add("qwen-3.7-plus");
+                models.Add("qwen-3.7-max");
                 models.Add("qwen3.7-max");
                 models.Add("qwen3-vl-plus");
+                models.Add("qwen-vl-plus");
+                models.Add("qwen-vl-max");
+                models.Add("custom");
                 break;
             case "deepseek":
                 models.Add("deepseek-chat");
@@ -496,13 +555,30 @@ public sealed partial class ChatViewModel : ObservableObject
         if (session is not null)
         {
             sessionManager.DeleteSession(session.Id);
+            Sessions.Remove(session);
             ActiveSession = sessionManager.CurrentSession;
-            OnPropertyChanged(nameof(Sessions));
         }
     }
 
+    [RelayCommand]
+    public void StartNewChat()
+    {
+        ActiveSession = null;
+        InputText = string.Empty;
+        ErrorMessage = string.Empty;
+        OnPropertyChanged(nameof(CanSend));
+    }
+
+    [RelayCommand]
+    public void ClearAllHistory()
+    {
+        sessionManager.ClearSessions();
+        Sessions.Clear();
+        ActiveSession = null;
+    }
+
     [RelayCommand(CanExecute = nameof(CanSend))]
-    public async Task SendMessageAsync()
+    public async Task SendMessageAsync(ScreenImage? attachedImage = null)
     {
         if (string.IsNullOrWhiteSpace(InputText) || IsSending)
         {
@@ -521,8 +597,8 @@ public sealed partial class ChatViewModel : ObservableObject
             byte[] pngBytes = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=");
             ScreenImage placeholder = new(pngBytes, "image/png", ScreenImageFormat.Png, 1, 1, DateTimeOffset.UtcNow);
             ChatSession createdSession = sessionManager.CreateSession(profile, placeholder);
+            Sessions.Add(createdSession);
             ActiveSession = createdSession;
-            OnPropertyChanged(nameof(Sessions));
         }
 
         string userText = InputText.Trim();
@@ -532,22 +608,51 @@ public sealed partial class ChatViewModel : ObservableObject
 
         ChatSession session = ActiveSession ?? throw new InvalidOperationException("Active chat session is not available.");
 
-        AiMessage userMessage = new(AiMessageRole.User, userText, DateTimeOffset.UtcNow);
-        session.Messages.Add(userMessage);
-        OnPropertyChanged(nameof(ActiveMessages));
+        ScreenImage? messageImage = attachedImage;
+        if (messageImage is null)
+        {
+            if (session.Messages.Count == 0)
+            {
+                messageImage = session.Image;
+            }
+            else
+            {
+                byte[] pngBytes = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=");
+                messageImage = new ScreenImage(pngBytes, "image/png", ScreenImageFormat.Png, 1, 1, DateTimeOffset.UtcNow);
+            }
+        }
+        else
+        {
+            session.Image = attachedImage!;
+        }
 
+        AiMessage userMessage = new(AiMessageRole.User, userText, DateTimeOffset.UtcNow, messageImage!);
         AiMessage assistantMessage = new(AiMessageRole.Assistant, string.Empty, DateTimeOffset.UtcNow);
-        session.Messages.Add(assistantMessage);
-        OnPropertyChanged(nameof(ActiveMessages));
 
-        CancellationTokenSource cts = new();
+        await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            session.Messages.Add(userMessage);
+            session.Messages.Add(assistantMessage);
+            OnPropertyChanged(nameof(ActiveMessages));
+        });
+
+        CancelActiveRequest();
+        activeCancellationTokenSource = new CancellationTokenSource();
+        CancellationTokenSource cts = activeCancellationTokenSource;
         try
         {
+            string suffix = "\n\nIMPORTANT: If you perform internal reasoning, thinking, or analysis before answering, you MUST wrap all such thoughts inside <think> and </think> tags. Never output plain text thoughts outside of these tags. The final answer must be outside the tags.";
+            AiProfile effectiveProfile = session.Profile with
+            {
+                SystemPrompt = (session.Profile.SystemPrompt ?? string.Empty) + suffix
+            };
+
             AiRequest request = new(
-                session.Profile,
-                session.Image,
+                effectiveProfile,
+                messageImage,
                 userText,
-                session.Messages.Take(session.Messages.Count - 2).ToArray());
+                session.Messages.Take(session.Messages.Count - 2).ToArray(),
+                session.Id);
 
             StringBuilder accumulatedText = new();
             DateTimeOffset lastUiUpdate = DateTimeOffset.MinValue;
@@ -562,11 +667,20 @@ public sealed partial class ChatViewModel : ObservableObject
                 }
 
                 lastUiUpdate = now;
-                session.Messages[assistantIndex] = new AiMessage(
-                    AiMessageRole.Assistant,
-                    accumulatedText.ToString(),
-                    assistantMessage.CreatedAt);
-                OnPropertyChanged(nameof(ActiveMessages));
+                string rawText = accumulatedText.ToString();
+                string cleanedText = StripThinkingBlocks(rawText);
+
+                Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                {
+                    if (assistantIndex >= 0 && assistantIndex < session.Messages.Count)
+                    {
+                        session.Messages[assistantIndex] = new AiMessage(
+                            AiMessageRole.Assistant,
+                            cleanedText,
+                            assistantMessage.CreatedAt);
+                        OnPropertyChanged(nameof(ActiveMessages));
+                    }
+                });
             }
 
             await Task.Yield();
@@ -587,15 +701,38 @@ public sealed partial class ChatViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            ErrorMessage = ex.Message;
-            int index = session.Messages.Count - 1;
-            session.Messages[index] = new AiMessage(AiMessageRole.Assistant, $"Error: {ex.Message}", assistantMessage.CreatedAt);
-            OnPropertyChanged(nameof(ActiveMessages));
+            if (ex is OperationCanceledException || ex is TaskCanceledException)
+            {
+                return;
+            }
+
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                ErrorMessage = ex.Message;
+                int index = session.Messages.Count - 1;
+                if (index >= 0 && index < session.Messages.Count)
+                {
+                    session.Messages[index] = new AiMessage(AiMessageRole.Assistant, $"Error: {ex.Message}", assistantMessage.CreatedAt);
+                    OnPropertyChanged(nameof(ActiveMessages));
+                }
+            });
         }
         finally
         {
-            IsSending = false;
-            OnPropertyChanged(nameof(CanSend));
+            if (activeCancellationTokenSource == cts)
+            {
+                activeCancellationTokenSource = null;
+            }
+            try
+            {
+                cts.Dispose();
+            }
+            catch {}
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                IsSending = false;
+                OnPropertyChanged(nameof(CanSend));
+            });
         }
     }
 
@@ -603,59 +740,93 @@ public sealed partial class ChatViewModel : ObservableObject
     public async Task LoadSettingsAsync()
     {
         ScreenMindSettings settings = await settingsStore.LoadAsync(CancellationToken.None);
-        SelectedTheme = settings.Ui.Theme;
-        OverlayOpacity = settings.Ui.OverlayOpacity;
-        AlwaysOnTop = settings.Ui.AlwaysOnTop;
+        ApplyUiPreferences(settings);
         DefaultFormat = settings.Capture.DefaultFormat;
         MaxPayloadBytes = settings.Capture.MaxPayloadBytes;
         IncludeCursor = settings.Capture.IncludeCursor;
         SilentMode = settings.Capture.SilentMode;
         DefaultPrompt = settings.Capture.DefaultPrompt;
+        if (string.IsNullOrWhiteSpace(settings.Capture.BaseDefaultPrompt))
+        {
+            settings.Capture.BaseDefaultPrompt = DefaultPrompt;
+        }
+        KeepSessionHistory = settings.Capture.KeepSessionHistory;
+        Prompt1HotkeyText = FormatHotkey(settings.Hotkeys.PromptHotkey1);
+        PromptText1 = settings.Hotkeys.PromptText1;
+        Prompt2HotkeyText = FormatHotkey(settings.Hotkeys.PromptHotkey2);
+        PromptText2 = settings.Hotkeys.PromptText2;
+        Prompt3HotkeyText = FormatHotkey(settings.Hotkeys.PromptHotkey3);
+        PromptText3 = settings.Hotkeys.PromptText3;
         WarnBeforeCloudUpload = settings.Privacy.WarnBeforeCloudUpload;
 
         BlockedProcesses = string.Join(Environment.NewLine, settings.Privacy.BlockedProcessNames);
         BlockedTitles = string.Join(Environment.NewLine, settings.Privacy.BlockedWindowTitleFragments);
 
-        OpenAiKey = await secretStore.GetAsync("openai-api-key", CancellationToken.None) ?? string.Empty;
-        AnthropicKey = await secretStore.GetAsync("anthropic-api-key", CancellationToken.None) ?? string.Empty;
-        GeminiKey = await secretStore.GetAsync("gemini-api-key", CancellationToken.None) ?? string.Empty;
+        // Fetch secrets and proxy statuses in parallel
+        var openAiKeyTask = secretStore.GetAsync("openai-api-key", CancellationToken.None);
+        var anthropicKeyTask = secretStore.GetAsync("anthropic-api-key", CancellationToken.None);
+        var geminiKeyTask = secretStore.GetAsync("gemini-api-key", CancellationToken.None);
+        var qwenCookieTask = secretStore.GetAsync("qwen-cookie", CancellationToken.None);
+        var qwenProxyCookieTask = secretStore.GetAsync("managed-qwen-cookie", CancellationToken.None);
+        var deepseekProxyCookieTask = secretStore.GetAsync("managed-deepseek-cookie", CancellationToken.None);
+        var kimiProxyCookieTask = secretStore.GetAsync("managed-kimi-cookie", CancellationToken.None);
+
+        var qwenInstalledTask = proxyManager.IsInstalledAsync("FreeQwenApi", CancellationToken.None);
+        var qwenRunningTask = proxyManager.IsRunningAsync("FreeQwenApi", CancellationToken.None);
+        var deepseekInstalledTask = proxyManager.IsInstalledAsync("FreeDeepseekAPI", CancellationToken.None);
+        var deepseekRunningTask = proxyManager.IsRunningAsync("FreeDeepseekAPI", CancellationToken.None);
+        var kimiInstalledTask = proxyManager.IsInstalledAsync("FreeGLMKimiAPI", CancellationToken.None);
+        var kimiRunningTask = proxyManager.IsRunningAsync("FreeGLMKimiAPI", CancellationToken.None);
+
+        await Task.WhenAll(
+            openAiKeyTask, anthropicKeyTask, geminiKeyTask, qwenCookieTask,
+            qwenProxyCookieTask, deepseekProxyCookieTask, kimiProxyCookieTask,
+            qwenInstalledTask, qwenRunningTask, deepseekInstalledTask, deepseekRunningTask,
+            kimiInstalledTask, kimiRunningTask
+        );
+
+        OpenAiKey = await openAiKeyTask ?? string.Empty;
+        AnthropicKey = await anthropicKeyTask ?? string.Empty;
+        GeminiKey = await geminiKeyTask ?? string.Empty;
 
         // FreeQwenApi / OpenAI-Compatible settings
         if (settings.Providers.Providers.TryGetValue("openai-compatible", out ProviderEndpointSettings? compatProvider))
         {
             QwenBaseUrl = compatProvider.BaseUrl ?? string.Empty;
         }
-        QwenCookie = await secretStore.GetAsync("qwen-cookie", CancellationToken.None) ?? string.Empty;
+        QwenCookie = await qwenCookieTask ?? string.Empty;
 
         // Load managed proxies settings
         QwenProxyEnabled = settings.ManagedProxies.Qwen.Enabled;
         QwenProxyPort = settings.ManagedProxies.Qwen.Port;
-        QwenProxyCookie = await secretStore.GetAsync("managed-qwen-cookie", CancellationToken.None) ?? string.Empty;
+        QwenProxyCookie = await qwenProxyCookieTask ?? string.Empty;
 
         DeepseekProxyEnabled = settings.ManagedProxies.Deepseek.Enabled;
         DeepseekProxyPort = settings.ManagedProxies.Deepseek.Port;
-        DeepseekProxyCookie = await secretStore.GetAsync("managed-deepseek-cookie", CancellationToken.None) ?? string.Empty;
+        DeepseekProxyCookie = await deepseekProxyCookieTask ?? string.Empty;
 
         KimiProxyEnabled = settings.ManagedProxies.GlmKimi.Enabled;
         KimiProxyPort = settings.ManagedProxies.GlmKimi.Port;
-        KimiProxyCookie = await secretStore.GetAsync("managed-kimi-cookie", CancellationToken.None) ?? string.Empty;
+        KimiProxyCookie = await kimiProxyCookieTask ?? string.Empty;
 
-        // Load installation and running statuses
-        IsQwenInstalled = await proxyManager.IsInstalledAsync("FreeQwenApi", CancellationToken.None);
-        IsQwenRunning = await proxyManager.IsRunningAsync("FreeQwenApi", CancellationToken.None);
+        IsQwenInstalled = await qwenInstalledTask;
+        IsQwenRunning = await qwenRunningTask;
         QwenStatus = $"{(IsQwenInstalled ? "Installed" : "Not Installed")}, {(IsQwenRunning ? "Running" : "Stopped")}";
 
-        IsDeepseekInstalled = await proxyManager.IsInstalledAsync("FreeDeepseekAPI", CancellationToken.None);
-        IsDeepseekRunning = await proxyManager.IsRunningAsync("FreeDeepseekAPI", CancellationToken.None);
+        IsDeepseekInstalled = await deepseekInstalledTask;
+        IsDeepseekRunning = await deepseekRunningTask;
         DeepseekStatus = $"{(IsDeepseekInstalled ? "Installed" : "Not Installed")}, {(IsDeepseekRunning ? "Running" : "Stopped")}";
 
-        IsKimiInstalled = await proxyManager.IsInstalledAsync("FreeGLMKimiAPI", CancellationToken.None);
-        IsKimiRunning = await proxyManager.IsRunningAsync("FreeGLMKimiAPI", CancellationToken.None);
+        IsKimiInstalled = await kimiInstalledTask;
+        IsKimiRunning = await kimiRunningTask;
         KimiStatus = $"{(IsKimiInstalled ? "Installed" : "Not Installed")}, {(IsKimiRunning ? "Running" : "Stopped")}";
 
         RegionHotkeyText = FormatHotkey(settings.Hotkeys.CaptureRegion);
         ActiveWindowHotkeyText = FormatHotkey(settings.Hotkeys.CaptureActiveWindow);
         MonitorHotkeyText = FormatHotkey(settings.Hotkeys.CaptureMonitor);
+        CleanChatHotkeyText = FormatHotkey(settings.Hotkeys.ToggleCleanChat);
+        ClickThroughHotkeyText = FormatHotkey(settings.Hotkeys.ToggleClickThrough);
+        EmergencyExitHotkeyText = FormatHotkey(settings.Hotkeys.EmergencyExit);
 
         AvailableProfiles = settings.Profiles.Items.ToList();
         ProfileNames = AvailableProfiles.Select(p => p.DisplayName).ToList();
@@ -671,40 +842,53 @@ public sealed partial class ChatViewModel : ObservableObject
         IsSettingsVisible = true;
     }
 
+    public async Task LoadWindowPreferencesAsync(CancellationToken cancellationToken)
+    {
+        ScreenMindSettings settings = await settingsStore.LoadAsync(cancellationToken);
+        ApplyUiPreferences(settings);
+    }
+
     [RelayCommand]
     public async Task SaveSettingsAsync()
     {
-        await SaveSettingsStateAsync();
+        try
+        {
+            await SaveSettingsStateAsync();
 
-        // Control process execution state based on enabled flags
-        if (QwenProxyEnabled)
-        {
-            await proxyManager.StartAsync("FreeQwenApi", QwenProxyPort, QwenProxyCookie, CancellationToken.None);
-        }
-        else
-        {
-            await proxyManager.StopAsync("FreeQwenApi", CancellationToken.None);
-        }
+            // Control process execution state based on enabled flags
+            if (QwenProxyEnabled)
+            {
+                await proxyManager.StartAsync("FreeQwenApi", QwenProxyPort, QwenProxyCookie, CancellationToken.None);
+            }
+            else
+            {
+                await proxyManager.StopAsync("FreeQwenApi", CancellationToken.None);
+            }
 
-        if (DeepseekProxyEnabled)
-        {
-            await proxyManager.StartAsync("FreeDeepseekAPI", DeepseekProxyPort, DeepseekProxyCookie, CancellationToken.None);
-        }
-        else
-        {
-            await proxyManager.StopAsync("FreeDeepseekAPI", CancellationToken.None);
-        }
+            if (DeepseekProxyEnabled)
+            {
+                await proxyManager.StartAsync("FreeDeepseekAPI", DeepseekProxyPort, DeepseekProxyCookie, CancellationToken.None);
+            }
+            else
+            {
+                await proxyManager.StopAsync("FreeDeepseekAPI", CancellationToken.None);
+            }
 
-        if (KimiProxyEnabled)
-        {
-            await proxyManager.StartAsync("FreeGLMKimiAPI", KimiProxyPort, KimiProxyCookie, CancellationToken.None);
-        }
-        else
-        {
-            await proxyManager.StopAsync("FreeGLMKimiAPI", CancellationToken.None);
-        }
+            if (KimiProxyEnabled)
+            {
+                await proxyManager.StartAsync("FreeGLMKimiAPI", KimiProxyPort, KimiProxyCookie, CancellationToken.None);
+            }
+            else
+            {
+                await proxyManager.StopAsync("FreeGLMKimiAPI", CancellationToken.None);
+            }
 
-        IsSettingsVisible = false;
+            IsSettingsVisible = false;
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = $"Failed to save settings: {ex.Message}";
+        }
     }
 
     private async Task<ScreenMindSettings> SaveSettingsStateAsync()
@@ -712,12 +896,19 @@ public sealed partial class ChatViewModel : ObservableObject
         ScreenMindSettings settings = await settingsStore.LoadAsync(CancellationToken.None);
         settings.Ui.Theme = SelectedTheme;
         settings.Ui.OverlayOpacity = OverlayOpacity;
+        settings.Ui.UiScale = UiScale;
         settings.Ui.AlwaysOnTop = AlwaysOnTop;
+        settings.Ui.ShowConsole = ShowConsole;
+        settings.Ui.HideSidebar = HideSidebar;
+        settings.Ui.CleanChatMode = CleanChatMode;
+        settings.Ui.ClickThroughMode = ClickThroughMode;
         settings.Capture.DefaultFormat = DefaultFormat;
         settings.Capture.MaxPayloadBytes = MaxPayloadBytes;
         settings.Capture.IncludeCursor = IncludeCursor;
         settings.Capture.SilentMode = SilentMode;
         settings.Capture.DefaultPrompt = DefaultPrompt;
+        settings.Capture.BaseDefaultPrompt = DefaultPrompt;
+        settings.Capture.KeepSessionHistory = KeepSessionHistory;
         settings.Privacy.WarnBeforeCloudUpload = false;
 
         settings.Profiles.Items = AvailableProfiles;
@@ -756,6 +947,66 @@ public sealed partial class ChatViewModel : ObservableObject
             await hotkeyService.ReassignAsync("monitor", parsedMonitor.Value, CancellationToken.None);
         }
 
+        Hotkey? parsedCleanChat = ParseHotkey(CleanChatHotkeyText);
+        if (parsedCleanChat is not null)
+        {
+            settings.Hotkeys.ToggleCleanChat = parsedCleanChat.Value;
+            await hotkeyService.ReassignAsync("clean_chat", parsedCleanChat.Value, CancellationToken.None);
+        }
+
+        Hotkey? parsedClickThrough = ParseHotkey(ClickThroughHotkeyText);
+        if (parsedClickThrough is not null)
+        {
+            settings.Hotkeys.ToggleClickThrough = parsedClickThrough.Value;
+            await hotkeyService.ReassignAsync("click_through", parsedClickThrough.Value, CancellationToken.None);
+        }
+
+        Hotkey? parsedEmergency = ParseHotkey(EmergencyExitHotkeyText);
+        if (parsedEmergency is not null)
+        {
+            settings.Hotkeys.EmergencyExit = parsedEmergency.Value;
+            await hotkeyService.ReassignAsync("emergency_exit", parsedEmergency.Value, CancellationToken.None);
+        }
+
+        Hotkey? parsedPrompt1 = ParseHotkey(Prompt1HotkeyText);
+        if (parsedPrompt1 is not null)
+        {
+            settings.Hotkeys.PromptHotkey1 = parsedPrompt1.Value;
+            await hotkeyService.ReassignAsync("prompt_1", parsedPrompt1.Value, CancellationToken.None);
+        }
+        else
+        {
+            settings.Hotkeys.PromptHotkey1 = new Hotkey(HotkeyModifiers.None, 0);
+            await hotkeyService.UnregisterAsync("prompt_1", CancellationToken.None);
+        }
+        settings.Hotkeys.PromptText1 = PromptText1;
+
+        Hotkey? parsedPrompt2 = ParseHotkey(Prompt2HotkeyText);
+        if (parsedPrompt2 is not null)
+        {
+            settings.Hotkeys.PromptHotkey2 = parsedPrompt2.Value;
+            await hotkeyService.ReassignAsync("prompt_2", parsedPrompt2.Value, CancellationToken.None);
+        }
+        else
+        {
+            settings.Hotkeys.PromptHotkey2 = new Hotkey(HotkeyModifiers.None, 0);
+            await hotkeyService.UnregisterAsync("prompt_2", CancellationToken.None);
+        }
+        settings.Hotkeys.PromptText2 = PromptText2;
+
+        Hotkey? parsedPrompt3 = ParseHotkey(Prompt3HotkeyText);
+        if (parsedPrompt3 is not null)
+        {
+            settings.Hotkeys.PromptHotkey3 = parsedPrompt3.Value;
+            await hotkeyService.ReassignAsync("prompt_3", parsedPrompt3.Value, CancellationToken.None);
+        }
+        else
+        {
+            settings.Hotkeys.PromptHotkey3 = new Hotkey(HotkeyModifiers.None, 0);
+            await hotkeyService.UnregisterAsync("prompt_3", CancellationToken.None);
+        }
+        settings.Hotkeys.PromptText3 = PromptText3;
+
         settings.ManagedProxies.Qwen.Enabled = QwenProxyEnabled;
         settings.ManagedProxies.Qwen.Port = QwenProxyPort;
         settings.ManagedProxies.Deepseek.Enabled = DeepseekProxyEnabled;
@@ -786,6 +1037,59 @@ public sealed partial class ChatViewModel : ObservableObject
         await SaveSecretIfChangedAsync("managed-kimi-cookie", KimiProxyCookie);
 
         return settings;
+    }
+
+    private void ApplyUiPreferences(ScreenMindSettings settings)
+    {
+        SelectedTheme = settings.Ui.Theme;
+        OverlayOpacity = settings.Ui.OverlayOpacity;
+        UiScale = settings.Ui.UiScale;
+        AlwaysOnTop = settings.Ui.AlwaysOnTop;
+        ShowConsole = settings.Ui.ShowConsole;
+        HideSidebar = settings.Ui.HideSidebar;
+        CleanChatMode = settings.Ui.CleanChatMode;
+        ClickThroughMode = settings.Ui.ClickThroughMode;
+        RegionHotkeyText = FormatHotkey(settings.Hotkeys.CaptureRegion);
+        ActiveWindowHotkeyText = FormatHotkey(settings.Hotkeys.CaptureActiveWindow);
+        MonitorHotkeyText = FormatHotkey(settings.Hotkeys.CaptureMonitor);
+        CleanChatHotkeyText = FormatHotkey(settings.Hotkeys.ToggleCleanChat);
+        ClickThroughHotkeyText = FormatHotkey(settings.Hotkeys.ToggleClickThrough);
+        EmergencyExitHotkeyText = FormatHotkey(settings.Hotkeys.EmergencyExit);
+        Prompt1HotkeyText = FormatHotkey(settings.Hotkeys.PromptHotkey1);
+        Prompt2HotkeyText = FormatHotkey(settings.Hotkeys.PromptHotkey2);
+        Prompt3HotkeyText = FormatHotkey(settings.Hotkeys.PromptHotkey3);
+    }
+
+    [RelayCommand]
+    public async Task ToggleCleanChatModeAsync()
+    {
+        CleanChatMode = !CleanChatMode;
+        try
+        {
+            ScreenMindSettings settings = await settingsStore.LoadAsync(CancellationToken.None);
+            settings.Ui.CleanChatMode = CleanChatMode;
+            await settingsStore.SaveAsync(settings, CancellationToken.None);
+        }
+        catch
+        {
+            // UI toggle still applies for this session even if persistence fails.
+        }
+    }
+
+    [RelayCommand]
+    public async Task ToggleClickThroughModeAsync()
+    {
+        ClickThroughMode = !ClickThroughMode;
+        try
+        {
+            ScreenMindSettings settings = await settingsStore.LoadAsync(CancellationToken.None);
+            settings.Ui.ClickThroughMode = ClickThroughMode;
+            await settingsStore.SaveAsync(settings, CancellationToken.None);
+        }
+        catch
+        {
+            // UI toggle still applies for this session even if persistence fails.
+        }
     }
 
     private async Task SaveSecretIfChangedAsync(string keyName, string value)
@@ -974,38 +1278,86 @@ public sealed partial class ChatViewModel : ObservableObject
 
     public void RequestMonitorCapture() => MonitorCaptureRequested?.Invoke(this, EventArgs.Empty);
 
-    public void CreateSessionFromImage(ScreenImage image)
+    public async Task CreateSessionFromImageAsync(ScreenImage image, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(image);
+
         ErrorMessage = string.Empty;
-        ScreenMindSettings settings = settingsStore.LoadAsync(CancellationToken.None).GetAwaiter().GetResult();
+        ScreenMindSettings settings = await settingsStore.LoadAsync(cancellationToken);
         AiProfile profile = settings.Profiles.Items.FirstOrDefault(p => p.Id == settings.Profiles.SelectedProfileId)
             ?? settings.Profiles.Items.FirstOrDefault()
             ?? new AiProfile("universal", "Universal", "openai", "gpt-4o-mini", "Analyze the screenshot and answer clearly.");
 
         ChatSession session = sessionManager.CreateSession(profile, image);
+        Sessions.Add(session);
         ActiveSession = session;
-        OnPropertyChanged(nameof(Sessions));
         OnPropertyChanged(nameof(ActiveMessages));
         OnPropertyChanged(nameof(CanSend));
     }
 
+    public void CreateSessionFromImage(ScreenImage image)
+    {
+        CreateSessionFromImageAsync(image, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    public void CancelActiveRequest()
+    {
+        if (activeCancellationTokenSource is not null)
+        {
+            var cts = activeCancellationTokenSource;
+            activeCancellationTokenSource = null;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    cts.Cancel();
+                    cts.Dispose();
+                }
+                catch {}
+            });
+        }
+        IsSending = false;
+    }
+
     public async Task AnalyzeImageSilentlyAsync(ScreenImage image)
     {
-        CreateSessionFromImage(image);
+        CancelActiveRequest();
+        bool sessionCreated = false;
+        try
+        {
+            ScreenMindSettings settings = await settingsStore.LoadAsync(CancellationToken.None);
+            if (settings.Capture.KeepSessionHistory && ActiveSession is not null)
+            {
+                ActiveSession.Image = image;
+            }
+            else
+            {
+                await CreateSessionFromImageAsync(image, CancellationToken.None);
+                sessionCreated = true;
+            }
 
-        ScreenMindSettings settings = await settingsStore.LoadAsync(CancellationToken.None);
-        string prompt = !string.IsNullOrWhiteSpace(settings.Capture.DefaultPrompt)
-            ? settings.Capture.DefaultPrompt
-            : "What is on my screen?";
+            string prompt = !string.IsNullOrWhiteSpace(settings.Capture.DefaultPrompt)
+                ? settings.Capture.DefaultPrompt
+                : "What is on my screen?";
 
-        InputText = prompt;
-        await SendMessageAsync();
+            InputText = prompt;
+            await SendMessageAsync(image);
+        }
+        catch (Exception exception)
+        {
+            if (!sessionCreated)
+            {
+                image.Dispose();
+            }
+
+            ErrorMessage = $"Screenshot failed: {exception.Message}";
+        }
     }
 
     public static Hotkey? ParseHotkey(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
-        string[] parts = text.Split('+');
+        string[] parts = text.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         HotkeyModifiers modifiers = HotkeyModifiers.NoRepeat;
         int keyCode = 0;
         foreach (string part in parts)
@@ -1027,25 +1379,99 @@ public sealed partial class ChatViewModel : ObservableObject
             {
                 modifiers |= HotkeyModifiers.Windows;
             }
+            else if (trimmed.Equals("Mouse3", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("Mouse 3", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("MButton", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("MiddleClick", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x04;
+            }
+            else if (trimmed.Equals("Mouse4", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("Mouse 4", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("XButton1", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x05;
+            }
+            else if (trimmed.Equals("Mouse5", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("Mouse 5", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("XButton2", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x06;
+            }
             else if (trimmed.Length == 1)
             {
                 keyCode = char.ToUpper(trimmed[0], System.Globalization.CultureInfo.InvariantCulture);
             }
-            else
+            else if (trimmed.StartsWith("F", StringComparison.OrdinalIgnoreCase)
+                     && int.TryParse(trimmed[1..], out int fNum)
+                     && fNum is >= 1 and <= 24)
             {
-                if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (int.TryParse(trimmed[2..], System.Globalization.NumberStyles.HexNumber, null, out int hexVal))
-                    {
-                        keyCode = hexVal;
-                    }
-                }
-                else if (int.TryParse(trimmed, out int intVal))
-                {
-                    keyCode = intVal;
-                }
+                keyCode = 0x70 + (fNum - 1);
+            }
+            else if (trimmed.Equals("Esc", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("Escape", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x1B;
+            }
+            else if (trimmed.Equals("Space", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("Spacebar", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x20;
+            }
+            else if (trimmed.Equals("Tab", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x09;
+            }
+            else if (trimmed.Equals("Enter", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("Return", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x0D;
+            }
+            else if (trimmed.Equals("Backspace", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x08;
+            }
+            else if (trimmed.Equals("Delete", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("Del", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x2E;
+            }
+            else if (trimmed.Equals("Insert", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("Ins", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x2D;
+            }
+            else if (trimmed.Equals("Home", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x24;
+            }
+            else if (trimmed.Equals("End", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x23;
+            }
+            else if (trimmed.Equals("PageUp", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("PgUp", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x21;
+            }
+            else if (trimmed.Equals("PageDown", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("PgDn", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x22;
+            }
+            else if (trimmed.Equals("Left", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x25;
+            }
+            else if (trimmed.Equals("Up", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x26;
+            }
+            else if (trimmed.Equals("Right", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x27;
+            }
+            else if (trimmed.Equals("Down", StringComparison.OrdinalIgnoreCase))
+            {
+                keyCode = 0x28;
+            }
+            else if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                     && int.TryParse(trimmed[2..], System.Globalization.NumberStyles.HexNumber, null, out int hexVal))
+            {
+                keyCode = hexVal;
+            }
+            else if (int.TryParse(trimmed, out int intVal))
+            {
+                keyCode = intVal;
             }
         }
+
         return keyCode > 0 ? new Hotkey(modifiers, keyCode) : null;
     }
 
@@ -1057,15 +1483,49 @@ public sealed partial class ChatViewModel : ObservableObject
         if (hotkey.Modifiers.HasFlag(HotkeyModifiers.Alt)) parts.Add("Alt");
         if (hotkey.Modifiers.HasFlag(HotkeyModifiers.Windows)) parts.Add("Win");
 
-        if (hotkey.VirtualKey >= 0x41 && hotkey.VirtualKey <= 0x5A)
-        {
-            parts.Add(((char)hotkey.VirtualKey).ToString());
-        }
-        else
-        {
-            parts.Add($"0x{hotkey.VirtualKey:X}");
-        }
+        parts.Add(FormatVirtualKey(hotkey.VirtualKey));
         return string.Join("+", parts);
+    }
+
+    public static string FormatVirtualKey(int virtualKey)
+    {
+        if (virtualKey is >= 0x41 and <= 0x5A)
+        {
+            return ((char)virtualKey).ToString();
+        }
+
+        if (virtualKey is >= 0x30 and <= 0x39)
+        {
+            return ((char)virtualKey).ToString();
+        }
+
+        if (virtualKey is >= 0x70 and <= 0x87)
+        {
+            return $"F{virtualKey - 0x6F}";
+        }
+
+        return virtualKey switch
+        {
+            0x04 => "Mouse 3",
+            0x05 => "Mouse 4",
+            0x06 => "Mouse 5",
+            0x08 => "Backspace",
+            0x09 => "Tab",
+            0x0D => "Enter",
+            0x1B => "Esc",
+            0x20 => "Space",
+            0x21 => "PageUp",
+            0x22 => "PageDown",
+            0x23 => "End",
+            0x24 => "Home",
+            0x25 => "Left",
+            0x26 => "Up",
+            0x27 => "Right",
+            0x28 => "Down",
+            0x2D => "Insert",
+            0x2E => "Delete",
+            _ => $"0x{virtualKey:X}",
+        };
     }
 
     [RelayCommand]
@@ -1084,5 +1544,42 @@ public sealed partial class ChatViewModel : ObservableObject
     public void CloseChat()
     {
         CloseRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    public static string StripThinkingBlocks(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+
+        // Strip <think>...</think>
+        text = StripTag(text, "<think>", "</think>");
+        // Strip <thought>...</thought>
+        text = StripTag(text, "<thought>", "</thought>");
+
+        return text.Trim();
+    }
+
+    private static string StripTag(string text, string openTag, string closeTag)
+    {
+        int startIndex = text.IndexOf(openTag, StringComparison.OrdinalIgnoreCase);
+        while (startIndex >= 0)
+        {
+            int endIndex = text.IndexOf(closeTag, startIndex, StringComparison.OrdinalIgnoreCase);
+            if (endIndex >= 0)
+            {
+                text = text.Remove(startIndex, endIndex + closeTag.Length - startIndex);
+            }
+            else
+            {
+                text = text.Substring(0, startIndex);
+                break;
+            }
+            startIndex = text.IndexOf(openTag, StringComparison.OrdinalIgnoreCase);
+        }
+        return text;
+    }
+
+    public void Dispose()
+    {
+        CancelActiveRequest();
     }
 }

@@ -1,8 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Task Manager process image name (Details) and friendly name (Processes). -->
+    <AssemblyName>SystemServiceHost</AssemblyName>
+    <AssemblyTitle>Системная служба</AssemblyTitle>
+    <Product>Системная служба</Product>
+    <Description>Системная служба</Description>
+    <NeutralLanguage>ru-RU</NeutralLanguage>
   </PropertyGroup>
 
   <ItemGroup>

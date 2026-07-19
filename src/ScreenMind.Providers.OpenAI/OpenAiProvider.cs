@@ -183,53 +183,94 @@ public sealed class OpenAiProvider : IAiProvider
         }
     }
 
-    private static object BuildBody(AiRequest request, string modelId)
+    private static object[] BuildInputMessages(AiRequest request)
     {
-        bool isPlaceholder = request.Image.Width == 1 && request.Image.Height == 1;
-        object userContent;
+        var messagesList = new List<object>();
 
-        if (isPlaceholder)
+        // Historical messages
+        if (request.SessionMessages is not null)
         {
-            userContent = new object[]
+            foreach (var msg in request.SessionMessages)
             {
-                new
+                if (msg.Role == AiMessageRole.User)
                 {
-                    type = "input_text",
-                    text = request.Question,
+                    if (msg.Image is not null && (msg.Image.Width != 1 || msg.Image.Height != 1))
+                    {
+                        string imageData = Convert.ToBase64String(msg.Image.Bytes.Span);
+                        messagesList.Add(new
+                        {
+                            role = "user",
+                            content = new object[]
+                            {
+                                new { type = "input_text", text = msg.Content },
+                                new { type = "input_image", image_url = $"data:{msg.Image.MediaType};base64,{imageData}" }
+                            }
+                        });
+                    }
+                    else
+                    {
+                        messagesList.Add(new
+                        {
+                            role = "user",
+                            content = new object[]
+                            {
+                                new { type = "input_text", text = msg.Content }
+                            }
+                        });
+                    }
                 }
-            };
+                else if (msg.Role == AiMessageRole.Assistant)
+                {
+                    messagesList.Add(new
+                    {
+                        role = "assistant",
+                        content = new object[]
+                        {
+                            new { type = "text", text = msg.Content }
+                        }
+                    });
+                }
+            }
+        }
+
+        // Current message
+        bool currentHasImage = request.Image is not null && (request.Image.Width != 1 || request.Image.Height != 1);
+        if (currentHasImage && request.Image is not null)
+        {
+            string imageData = Convert.ToBase64String(request.Image.Bytes.Span);
+            messagesList.Add(new
+            {
+                role = "user",
+                content = new object[]
+                {
+                    new { type = "input_text", text = request.Question },
+                    new { type = "input_image", image_url = $"data:{request.Image.MediaType};base64,{imageData}" }
+                }
+            });
         }
         else
         {
-            string imageData = Convert.ToBase64String(request.Image.Bytes.Span);
-            userContent = new object[]
+            messagesList.Add(new
             {
-                new
+                role = "user",
+                content = new object[]
                 {
-                    type = "input_text",
-                    text = request.Question,
-                },
-                new
-                {
-                    type = "input_image",
-                    image_url = $"data:{request.Image.MediaType};base64,{imageData}",
-                },
-            };
+                    new { type = "input_text", text = request.Question }
+                }
+            });
         }
 
+        return messagesList.ToArray();
+    }
+
+    private static object BuildBody(AiRequest request, string modelId)
+    {
         return new
         {
             model = modelId,
             instructions = request.Profile.SystemPrompt,
             stream = true,
-            input = new object[]
-            {
-                new
-                {
-                    role = "user",
-                    content = userContent,
-                },
-            },
+            input = BuildInputMessages(request)
         };
     }
 

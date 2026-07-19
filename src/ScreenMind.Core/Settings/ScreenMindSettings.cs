@@ -63,6 +63,20 @@ public sealed class ScreenMindSettings
             errors.Add("Updates.CheckIntervalHours must be at least 1.");
         }
 
+        if (!double.IsFinite(Ui.OverlayOpacity)
+            || Ui.OverlayOpacity < UiSettings.MinOverlayOpacity
+            || Ui.OverlayOpacity > UiSettings.MaxOverlayOpacity)
+        {
+            errors.Add("Ui.OverlayOpacity must be between 0 and 1.");
+        }
+
+        if (!double.IsFinite(Ui.UiScale)
+            || Ui.UiScale < UiSettings.MinUiScale
+            || Ui.UiScale > UiSettings.MaxUiScale)
+        {
+            errors.Add("Ui.UiScale must be between 0.75 and 1.5.");
+        }
+
         return errors.Count == 0
             ? SettingsValidationResult.Valid
             : SettingsValidationResult.Invalid(errors);
@@ -103,11 +117,29 @@ public sealed class GeneralSettings
 
 public sealed class UiSettings
 {
+    public const double MinOverlayOpacity = 0d;
+    public const double MaxOverlayOpacity = 1d;
+    public const double MinUiScale = 0.50d;
+    public const double MaxUiScale = 1.5d;
+
     public string Theme { get; set; } = "system";
 
     public double OverlayOpacity { get; set; } = 0.96d;
 
+    public double UiScale { get; set; } = 1d;
+
+    public bool ShowConsole { get; set; }
+
+    public bool HideSidebar { get; set; }
+
+    /// <summary>
+    /// Minimal chat: hide compose/input bar; only user messages and AI replies remain visible.
+    /// </summary>
+    public bool CleanChatMode { get; set; }
+
     public bool AlwaysOnTop { get; set; } = true;
+
+    public bool ClickThroughMode { get; set; }
 }
 
 public sealed class UpdateSettings

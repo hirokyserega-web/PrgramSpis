@@ -158,59 +158,86 @@ public sealed class AnthropicProvider : IAiProvider
         }
     }
 
-    private static object BuildBody(AiRequest request, string modelId)
+    private static object[] BuildMessages(AiRequest request)
     {
-        bool isPlaceholder = request.Image.Width == 1 && request.Image.Height == 1;
-        object userContent;
+        var messagesList = new List<object>();
 
-        if (isPlaceholder)
+        // Historical messages
+        if (request.SessionMessages is not null)
         {
-            userContent = new object[]
+            foreach (var msg in request.SessionMessages)
             {
-                new
+                if (msg.Role == AiMessageRole.User)
                 {
-                    type = "text",
-                    text = request.Question,
+                    if (msg.Image is not null && (msg.Image.Width != 1 || msg.Image.Height != 1))
+                    {
+                        string imageData = Convert.ToBase64String(msg.Image.Bytes.Span);
+                        messagesList.Add(new
+                        {
+                            role = "user",
+                            content = new object[]
+                            {
+                                new { type = "text", text = msg.Content },
+                                new { type = "image", source = new { type = "base64", media_type = msg.Image.MediaType, data = imageData } }
+                            }
+                        });
+                    }
+                    else
+                    {
+                        messagesList.Add(new
+                        {
+                            role = "user",
+                            content = msg.Content
+                        });
+                    }
                 }
-            };
+                else if (msg.Role == AiMessageRole.Assistant)
+                {
+                    messagesList.Add(new
+                    {
+                        role = "assistant",
+                        content = msg.Content
+                    });
+                }
+            }
+        }
+
+        // Current message
+        bool currentHasImage = request.Image is not null && (request.Image.Width != 1 || request.Image.Height != 1);
+        if (currentHasImage && request.Image is not null)
+        {
+            string imageData = Convert.ToBase64String(request.Image.Bytes.Span);
+            messagesList.Add(new
+            {
+                role = "user",
+                content = new object[]
+                {
+                    new { type = "text", text = request.Question },
+                    new { type = "image", source = new { type = "base64", media_type = request.Image.MediaType, data = imageData } }
+                }
+            });
         }
         else
         {
-            string imageData = Convert.ToBase64String(request.Image.Bytes.Span);
-            userContent = new object[]
+            messagesList.Add(new
             {
-                new
-                {
-                    type = "text",
-                    text = request.Question,
-                },
-                new
-                {
-                    type = "image",
-                    source = new
-                    {
-                        type = "base64",
-                        media_type = request.Image.MediaType,
-                        data = imageData,
-                    },
-                },
-            };
+                role = "user",
+                content = request.Question
+            });
         }
 
+        return messagesList.ToArray();
+    }
+
+    private static object BuildBody(AiRequest request, string modelId)
+    {
         return new
         {
             model = modelId,
             max_tokens = 2048,
             stream = true,
             system = request.Profile.SystemPrompt,
-            messages = new object[]
-            {
-                new
-                {
-                    role = "user",
-                    content = userContent,
-                },
-            },
+            messages = BuildMessages(request)
         };
     }
 

@@ -49,6 +49,9 @@ public sealed partial class CompactOverlayViewModel : ObservableObject
     [ObservableProperty]
     private double overlayOpacity = 0.96d;
 
+    [ObservableProperty]
+    private double uiScale = 1d;
+
     public CompactOverlayViewModel(
         MainAnalysisStateMachine stateMachine,
         IAiOrchestrator orchestrator,
@@ -209,6 +212,7 @@ public sealed partial class CompactOverlayViewModel : ObservableObject
             {
                 ScreenMindSettings settings = await settingsStore.LoadAsync(activeCts.Token);
                 OverlayOpacity = settings.Ui.OverlayOpacity;
+                UiScale = settings.Ui.UiScale;
 
                 AiProfile profile = settings.Profiles.Items.FirstOrDefault(p => p.Id == settings.Profiles.SelectedProfileId)
                     ?? settings.Profiles.Items.FirstOrDefault()

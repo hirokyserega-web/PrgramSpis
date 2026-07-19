@@ -23,6 +23,7 @@ public static class WindowsPlatformServiceCollectionExtensions
         services.AddSingleton<ISecretStore, WindowsCredentialSecretStore>();
         services.AddSingleton<ITrayService, WindowsTrayService>();
         services.AddSingleton<IWindowCaptureExclusionService, WindowsWindowCaptureExclusionService>();
+        services.AddSingleton<IWindowClickThroughService, WindowsWindowClickThroughService>();
         services.AddSingleton<IDiagnosticsService, WindowsDiagnosticsService>();
 
         return services;

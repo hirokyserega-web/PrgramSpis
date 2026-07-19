@@ -18,10 +18,12 @@ public sealed partial class WindowsTrayService : ITrayService
         this.logger = logger;
         notifyIcon = new NotifyIcon
         {
-            Text = "ScreenMind",
+            Text = "Системная служба",
             Icon = SystemIcons.Application,
-            Visible = true,
+            Visible = false,
         };
+        notifyIcon.MouseClick += OnTrayMouseClick;
+        notifyIcon.DoubleClick += OnTrayDoubleClick;
     }
 
     public Task SetCommandsAsync(
@@ -98,4 +100,44 @@ public sealed partial class WindowsTrayService : ITrayService
 
     [LoggerMessage(EventId = 4002, Level = LogLevel.Error, Message = "Tray command failed.")]
     private static partial void TrayCommandFailed(ILogger logger, Exception exception);
+
+    private async void OnTrayMouseClick(object? sender, MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left)
+        {
+            await ExecuteOpenChatCommandAsync().ConfigureAwait(false);
+        }
+    }
+
+    private async void OnTrayDoubleClick(object? sender, EventArgs e)
+    {
+        await ExecuteOpenChatCommandAsync().ConfigureAwait(false);
+    }
+
+    private async Task ExecuteOpenChatCommandAsync()
+    {
+        lock (gate)
+        {
+            if (isDisposed) return;
+        }
+
+        if (currentMenu is not null)
+        {
+            foreach (ToolStripItem item in currentMenu.Items)
+            {
+                if (item is ToolStripMenuItem { Tag: TrayCommand command } && command.Id == "open_chat")
+                {
+                    try
+                    {
+                        await command.ExecuteAsync(CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception exception)
+                    {
+                        TrayCommandFailed(logger, exception);
+                    }
+                    break;
+                }
+            }
+        }
+    }
 }

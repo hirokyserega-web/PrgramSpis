@@ -5,6 +5,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using ScreenMind.Core.Capture;
+using ScreenMind.Core.Settings;
 
 namespace ScreenMind.UI.Overlay;
 
@@ -21,6 +22,8 @@ public sealed class CompactOverlayWindow : Window
     private readonly Button copyBtn;
     private readonly Button expandBtn;
     private readonly Button closeBtn;
+    private readonly Border mainBorder;
+    private readonly LayoutTransformControl mainTransform;
 
     // Same deep-space visual language as main workspace.
     private static readonly ISolidColorBrush BgBrush = new SolidColorBrush(Color.Parse("#F5080B14"));
@@ -65,7 +68,7 @@ public sealed class CompactOverlayWindow : Window
         ];
 
         // Main layout container (with border and rounded corners)
-        Border mainBorder = new Border
+        mainBorder = new Border
         {
             Background = BgBrush,
             BorderBrush = BorderBrushColor,
@@ -73,13 +76,18 @@ public sealed class CompactOverlayWindow : Window
             CornerRadius = new CornerRadius(16),
             ClipToBounds = true
         };
+        mainTransform = new LayoutTransformControl
+        {
+            Child = mainBorder
+        };
+        ApplyUiScale();
 
         Grid mainGrid = new Grid
         {
             RowDefinitions = new RowDefinitions("54,*,Auto")
         };
         mainBorder.Child = mainGrid;
-        Content = mainBorder;
+        Content = mainTransform;
 
         // --- ROW 0: Header ---
         Grid headerGrid = new Grid
@@ -107,7 +115,7 @@ public sealed class CompactOverlayWindow : Window
         headerGrid.Children.Add(statusLabel);
         Grid.SetColumn(statusLabel, 0);
 
-        Button topmostBtn = CreateButton("Pin", BtnBgNormal, Brushes.White, isHeaderClose: true);
+        Button topmostBtn = CreateButton("Pin", BtnBgNormal, Brushes.White, isHeaderClose: true, isRedHover: false);
         topmostBtn.FontSize = 10;
         topmostBtn.Opacity = Topmost ? 1 : 0.55;
         topmostBtn.Click += (_, _) =>
@@ -118,7 +126,7 @@ public sealed class CompactOverlayWindow : Window
         headerGrid.Children.Add(topmostBtn);
         Grid.SetColumn(topmostBtn, 1);
 
-        Button headerCloseBtn = CreateButton("✕", BtnBgNormal, Brushes.White, isHeaderClose: true);
+        Button headerCloseBtn = CreateButton("✕", BtnBgNormal, Brushes.White, isHeaderClose: true, isRedHover: true);
         headerCloseBtn.Click += (s, e) => viewModel.Close();
         headerGrid.Children.Add(headerCloseBtn);
         Grid.SetColumn(headerCloseBtn, 2);
@@ -244,7 +252,7 @@ public sealed class CompactOverlayWindow : Window
         UpdateControlsState();
     }
 
-    private static Button CreateButton(string text, ISolidColorBrush background, ISolidColorBrush foreground, bool isHeaderClose = false)
+    private static Button CreateButton(string text, ISolidColorBrush background, ISolidColorBrush foreground, bool isHeaderClose = false, bool isRedHover = false)
     {
         Button btn = new Button
         {
@@ -269,7 +277,7 @@ public sealed class CompactOverlayWindow : Window
         // Elegant hover animations in C# code
         btn.PointerEntered += (s, e) =>
         {
-            if (isHeaderClose)
+            if (isRedHover)
             {
                 btn.Background = new SolidColorBrush(Color.FromArgb(255, 220, 38, 38));
             }
@@ -317,9 +325,22 @@ public sealed class CompactOverlayWindow : Window
             {
                 Opacity = viewModel.OverlayOpacity;
             }
+            else if (e.PropertyName == nameof(CompactOverlayViewModel.UiScale))
+            {
+                ApplyUiScale();
+            }
 
             UpdateControlsState();
         });
+    }
+
+    private void ApplyUiScale()
+    {
+        double scale = double.IsFinite(viewModel.UiScale)
+            ? Math.Clamp(viewModel.UiScale, UiSettings.MinUiScale, UiSettings.MaxUiScale)
+            : 1d;
+
+        mainTransform.LayoutTransform = new ScaleTransform(scale, scale);
     }
 
     private void UpdateControlsState()

@@ -15,6 +15,12 @@ public sealed class AvaloniaApp : Application
     private const string ActiveWindowHotkeyId = "active_window";
     private const string RegionHotkeyId = "region";
     private const string MonitorHotkeyId = "monitor";
+    private const string CleanChatHotkeyId = "clean_chat";
+    private const string ClickThroughHotkeyId = "click_through";
+    private const string EmergencyExitHotkeyId = "emergency_exit";
+    private const string Prompt1HotkeyId = "prompt_1";
+    private const string Prompt2HotkeyId = "prompt_2";
+    private const string Prompt3HotkeyId = "prompt_3";
 
     private readonly IServiceProvider serviceProvider;
     private IHotkeyService? hotkeyService;
@@ -47,6 +53,7 @@ public sealed class AvaloniaApp : Application
     {
         try
         {
+            Console.WriteLine("[AvaloniaApp] Starting background services...");
             ISettingsStore settingsStore = serviceProvider.GetRequiredService<ISettingsStore>();
             hotkeyService = serviceProvider.GetRequiredService<IHotkeyService>();
             trayService = serviceProvider.GetRequiredService<ITrayService>();
@@ -56,6 +63,7 @@ public sealed class AvaloniaApp : Application
             IChatWindowService chatWindowService = serviceProvider.GetRequiredService<IChatWindowService>();
 
             // Load settings
+            Console.WriteLine("[AvaloniaApp] Loading settings...");
             ScreenMindSettings settings = await settingsStore.LoadAsync(CancellationToken.None);
 
             // Start enabled managed background proxies on startup
@@ -82,10 +90,12 @@ public sealed class AvaloniaApp : Application
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"[AvaloniaApp] Failed to start managed background proxies on startup: {ex}");
                 Debug.WriteLine($"Failed to start managed background proxies on startup: {ex}");
             }
 
             // Register global hotkeys from settings
+            Console.WriteLine("[AvaloniaApp] Registering hotkeys...");
             hotkeyService.HotkeyPressed += (s, e) =>
             {
                 Avalonia.Threading.Dispatcher.UIThread.Post(async () =>
@@ -108,9 +118,104 @@ public sealed class AvaloniaApp : Application
                         {
                             await compactOverlayService.ShowAsync(new CaptureTarget.MonitorWithCursor(), CancellationToken.None);
                         }
+                        else if (e.RegistrationId == CleanChatHotkeyId)
+                        {
+                            chatWindowService.ToggleCleanChatMode();
+                        }
+                        else if (e.RegistrationId == ClickThroughHotkeyId)
+                        {
+                            chatWindowService.ToggleClickThroughMode();
+                        }
+                        else if (e.RegistrationId == Prompt1HotkeyId)
+                        {
+                            var freshSettings = await settingsStore.LoadAsync(CancellationToken.None);
+                            if (string.IsNullOrWhiteSpace(freshSettings.Capture.BaseDefaultPrompt))
+                            {
+                                freshSettings.Capture.BaseDefaultPrompt = freshSettings.Capture.DefaultPrompt;
+                            }
+                            string basePrompt = string.IsNullOrWhiteSpace(freshSettings.Capture.BaseDefaultPrompt)
+                                ? "What is on my screen?"
+                                : freshSettings.Capture.BaseDefaultPrompt;
+
+                            string newPrompt = freshSettings.Capture.DefaultPrompt == freshSettings.Hotkeys.PromptText1
+                                ? basePrompt
+                                : freshSettings.Hotkeys.PromptText1;
+
+                            freshSettings.Capture.DefaultPrompt = newPrompt;
+                            await settingsStore.SaveAsync(freshSettings, CancellationToken.None);
+                            chatWindowService.SetDefaultPrompt(newPrompt);
+                        }
+                        else if (e.RegistrationId == Prompt2HotkeyId)
+                        {
+                            var freshSettings = await settingsStore.LoadAsync(CancellationToken.None);
+                            if (string.IsNullOrWhiteSpace(freshSettings.Capture.BaseDefaultPrompt))
+                            {
+                                freshSettings.Capture.BaseDefaultPrompt = freshSettings.Capture.DefaultPrompt;
+                            }
+                            string basePrompt = string.IsNullOrWhiteSpace(freshSettings.Capture.BaseDefaultPrompt)
+                                ? "What is on my screen?"
+                                : freshSettings.Capture.BaseDefaultPrompt;
+
+                            string newPrompt = freshSettings.Capture.DefaultPrompt == freshSettings.Hotkeys.PromptText2
+                                ? basePrompt
+                                : freshSettings.Hotkeys.PromptText2;
+
+                            freshSettings.Capture.DefaultPrompt = newPrompt;
+                            await settingsStore.SaveAsync(freshSettings, CancellationToken.None);
+                            chatWindowService.SetDefaultPrompt(newPrompt);
+                        }
+                        else if (e.RegistrationId == Prompt3HotkeyId)
+                        {
+                            var freshSettings = await settingsStore.LoadAsync(CancellationToken.None);
+                            if (string.IsNullOrWhiteSpace(freshSettings.Capture.BaseDefaultPrompt))
+                            {
+                                freshSettings.Capture.BaseDefaultPrompt = freshSettings.Capture.DefaultPrompt;
+                            }
+                            string basePrompt = string.IsNullOrWhiteSpace(freshSettings.Capture.BaseDefaultPrompt)
+                                ? "What is on my screen?"
+                                : freshSettings.Capture.BaseDefaultPrompt;
+
+                            string newPrompt = freshSettings.Capture.DefaultPrompt == freshSettings.Hotkeys.PromptText3
+                                ? basePrompt
+                                : freshSettings.Hotkeys.PromptText3;
+
+                            freshSettings.Capture.DefaultPrompt = newPrompt;
+                            await settingsStore.SaveAsync(freshSettings, CancellationToken.None);
+                            chatWindowService.SetDefaultPrompt(newPrompt);
+                        }
+                        else if (e.RegistrationId == EmergencyExitHotkeyId)
+                        {
+                            // Hard emergency exit — works even if UI is stuck.
+                            try
+                            {
+                                if (serviceProvider.GetService(typeof(ScreenMind.Core.Ai.IExternalProxyManager)) is IDisposable proxyManager)
+                                {
+                                    proxyManager.Dispose();
+                                }
+                            }
+                            catch (Exception killEx)
+                            {
+                                Debug.WriteLine($"Emergency exit proxy stop failed: {killEx}");
+                            }
+
+                            try
+                            {
+                                if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktopLifetime)
+                                {
+                                    desktopLifetime.Shutdown();
+                                }
+                            }
+                            catch
+                            {
+                                // ignore and force-kill process
+                            }
+
+                            Environment.Exit(0);
+                        }
                     }
                     catch (Exception ex)
                     {
+                        Console.WriteLine($"[AvaloniaApp] Hotkey handler failed: {ex}");
                         Debug.WriteLine($"Hotkey handler failed: {ex}");
                     }
                 });
@@ -119,8 +224,19 @@ public sealed class AvaloniaApp : Application
             await hotkeyService.RegisterAsync(new HotkeyRegistration(ActiveWindowHotkeyId, settings.Hotkeys.CaptureActiveWindow, "Capture Active Window"), CancellationToken.None);
             await hotkeyService.RegisterAsync(new HotkeyRegistration(RegionHotkeyId, settings.Hotkeys.CaptureRegion, "Capture Region"), CancellationToken.None);
             await hotkeyService.RegisterAsync(new HotkeyRegistration(MonitorHotkeyId, settings.Hotkeys.CaptureMonitor, "Capture Monitor"), CancellationToken.None);
+            await hotkeyService.RegisterAsync(new HotkeyRegistration(CleanChatHotkeyId, settings.Hotkeys.ToggleCleanChat, "Toggle Clean Chat"), CancellationToken.None);
+            await hotkeyService.RegisterAsync(new HotkeyRegistration(ClickThroughHotkeyId, settings.Hotkeys.ToggleClickThrough, "Toggle Click Through"), CancellationToken.None);
+            await hotkeyService.RegisterAsync(new HotkeyRegistration(EmergencyExitHotkeyId, settings.Hotkeys.EmergencyExit, "Emergency Exit"), CancellationToken.None);
+
+            if (settings.Hotkeys.PromptHotkey1.VirtualKey > 0)
+                await hotkeyService.RegisterAsync(new HotkeyRegistration(Prompt1HotkeyId, settings.Hotkeys.PromptHotkey1, "Switch to Prompt 1"), CancellationToken.None);
+            if (settings.Hotkeys.PromptHotkey2.VirtualKey > 0)
+                await hotkeyService.RegisterAsync(new HotkeyRegistration(Prompt2HotkeyId, settings.Hotkeys.PromptHotkey2, "Switch to Prompt 2"), CancellationToken.None);
+            if (settings.Hotkeys.PromptHotkey3.VirtualKey > 0)
+                await hotkeyService.RegisterAsync(new HotkeyRegistration(Prompt3HotkeyId, settings.Hotkeys.PromptHotkey3, "Switch to Prompt 3"), CancellationToken.None);
 
             // Set tray commands
+            Console.WriteLine("[AvaloniaApp] Setting tray commands...");
             List<TrayCommand> commands = new List<TrayCommand>
             {
                 new TrayCommand("capture_region", "Capture Region", true, async ct =>
@@ -153,11 +269,59 @@ public sealed class AvaloniaApp : Application
             await trayService.SetCommandsAsync(commands, CancellationToken.None);
 
             // Open Chat & Settings window automatically on startup
+            Console.WriteLine("[AvaloniaApp] Showing chat window...");
             chatWindowService.Show();
+
+            // Ensure tray/hotkeys/proxies stop when the desktop lifetime ends (X or tray Exit).
+            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
+            {
+                lifetime.Exit += OnDesktopExit;
+            }
         }
         catch (Exception ex)
         {
+            Console.WriteLine($"[AvaloniaApp] Failed to start background services: {ex}");
             Debug.WriteLine($"Failed to start background services: {ex}");
+        }
+    }
+
+    private void OnDesktopExit(object? sender, ControlledApplicationLifetimeExitEventArgs e)
+    {
+        try
+        {
+            if (hotkeyService is IAsyncDisposable hotkeyDisposable)
+            {
+                hotkeyDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Failed to dispose hotkeys on exit: {ex}");
+        }
+
+        try
+        {
+            if (trayService is IAsyncDisposable trayDisposable)
+            {
+                trayDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Failed to dispose tray on exit: {ex}");
+        }
+
+        try
+        {
+            if (serviceProvider.GetService(typeof(ScreenMind.Core.Ai.IExternalProxyManager))
+                is IDisposable proxyManager)
+            {
+                proxyManager.Dispose();
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Failed to stop proxies on exit: {ex}");
         }
     }
 }

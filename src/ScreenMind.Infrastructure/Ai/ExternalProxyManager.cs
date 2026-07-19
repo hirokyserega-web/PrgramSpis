@@ -255,6 +255,11 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             }
         }
 
+        if (proxyName.Equals("FreeQwenApi", StringComparison.OrdinalIgnoreCase))
+        {
+            PatchQwenProxyRoutes(dir);
+        }
+
         try
         {
             string envPath = Path.Combine(dir, ".env");
@@ -556,5 +561,45 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             }
         }
         activeProcesses.Clear();
+    }
+
+    private static void PatchQwenProxyRoutes(string proxyDir)
+    {
+        try
+        {
+            string routesPath = Path.Combine(proxyDir, "src", "api", "routes.js");
+            if (!File.Exists(routesPath)) return;
+
+            string content = File.ReadAllText(routesPath);
+            bool modified = false;
+
+            // Replace with \r\n line endings
+            string targetWindows = "                    't2t',\r\n                    null,\r\n                    true,\r\n                    0,";
+            string replacementWindows = "                    (files && files.length > 0) ? 'only_file' : 't2t',\r\n                    null,\r\n                    true,\r\n                    0,";
+            if (content.Contains(targetWindows))
+            {
+                content = content.Replace(targetWindows, replacementWindows);
+                modified = true;
+            }
+
+            // Replace with \n line endings
+            string targetUnix = "                    't2t',\n                    null,\n                    true,\n                    0,";
+            string replacementUnix = "                    (files && files.length > 0) ? 'only_file' : 't2t',\n                    null,\n                    true,\n                    0,";
+            if (content.Contains(targetUnix))
+            {
+                content = content.Replace(targetUnix, replacementUnix);
+                modified = true;
+            }
+
+            if (modified)
+            {
+                File.WriteAllText(routesPath, content, System.Text.Encoding.UTF8);
+                Console.WriteLine("[ExternalProxyManager] Successfully patched Qwen proxy routes.js with only_file chatType support!");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ExternalProxyManager] Failed to patch Qwen proxy routes: {ex}");
+        }
     }
 }

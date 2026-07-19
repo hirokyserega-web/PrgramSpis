@@ -13,5 +13,9 @@ public sealed class CaptureSettings
     public bool SilentMode { get; set; } = true;
 
     public string DefaultPrompt { get; set; } = "What is on my screen?";
+
+    public string BaseDefaultPrompt { get; set; } = "What is on my screen?";
+
+    public bool KeepSessionHistory { get; set; }
 }
 

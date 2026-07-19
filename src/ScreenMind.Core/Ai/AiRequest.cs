@@ -6,5 +6,6 @@ public sealed record AiRequest(
     AiProfile Profile,
     ScreenImage Image,
     string Question,
-    IReadOnlyList<AiMessage> SessionMessages);
+    IReadOnlyList<AiMessage> SessionMessages,
+    string? SessionId = null);
 

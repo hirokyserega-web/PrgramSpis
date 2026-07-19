@@ -81,43 +81,38 @@ public sealed class AvaloniaCompactOverlayService : ICompactOverlayService
 
         Dispatcher.UIThread.Post(async () =>
         {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                completion.TrySetResult();
-                return;
-            }
-
-            // Hide ChatWindow first to prevent it from showing in screenshots
-            chatWindowService.Hide();
-            await Task.Delay(250);
-
             ScreenImage? preCaptured = null;
             try
             {
-                preCaptured = await captureService.CaptureAsync(target, cancellationToken);
-            }
-            catch (Exception)
-            {
-                // Let view handle it
-            }
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    completion.TrySetResult();
+                    return;
+                }
 
-            if (cancellationToken.IsCancellationRequested)
+                // Stealth path: do not Hide/Show the chat window (that flashes the active app).
+                // SetWindowDisplayAffinity (WDA_EXCLUDEFROMCAPTURE) keeps ScreenMind off the bitmap
+                // while the window stays exactly as the user sees it.
+                chatWindowService.PrepareForStealthCapture();
+
+                preCaptured = await captureService.CaptureAsync(target, cancellationToken);
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    preCaptured.Dispose();
+                    completion.TrySetResult();
+                    return;
+                }
+
+                // Analyze in chat without Activate / SetForegroundWindow.
+                chatWindowService.AnalyzeImage(preCaptured);
+                completion.TrySetResult();
+            }
+            catch (Exception exception)
             {
                 preCaptured?.Dispose();
-                completion.TrySetResult();
-                return;
+                completion.TrySetException(exception);
             }
-
-            if (preCaptured is not null)
-            {
-                chatWindowService.AnalyzeImage(preCaptured);
-            }
-            else
-            {
-                // If capture failed, restore the window
-                chatWindowService.Show();
-            }
-            completion.TrySetResult();
         });
 
         return completion.Task;

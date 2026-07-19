@@ -168,14 +168,53 @@ public sealed class OllamaProvider : IAiProvider
 
     private static object BuildBody(AiRequest request, string modelId)
     {
-        bool isPlaceholder = request.Image.Width == 1 && request.Image.Height == 1;
+        var promptBuilder = new StringBuilder();
+        var imagesList = new List<string>();
 
-        if (isPlaceholder)
+        // System prompt
+        if (!string.IsNullOrWhiteSpace(request.Profile.SystemPrompt))
+        {
+            promptBuilder.Append("System: ").AppendLine(request.Profile.SystemPrompt);
+            promptBuilder.AppendLine();
+        }
+
+        // History messages
+        if (request.SessionMessages is not null)
+        {
+            int imageIndex = 1;
+            foreach (var msg in request.SessionMessages)
+            {
+                string roleName = msg.Role == AiMessageRole.User ? "User" : "Assistant";
+                promptBuilder.Append(roleName).Append(": ").Append(msg.Content);
+                
+                if (msg.Image is not null && (msg.Image.Width != 1 || msg.Image.Height != 1))
+                {
+                    promptBuilder.Append(" [Attached Image ").Append(imageIndex).Append(']');
+                    imagesList.Add(Convert.ToBase64String(msg.Image.Bytes.Span));
+                    imageIndex++;
+                }
+                
+                promptBuilder.AppendLine();
+            }
+        }
+
+        // Current message
+        promptBuilder.Append("User: ").Append(request.Question);
+        bool currentHasImage = request.Image is not null && (request.Image.Width != 1 || request.Image.Height != 1);
+        if (currentHasImage && request.Image is not null)
+        {
+            promptBuilder.Append(" [Attached Image]");
+            imagesList.Add(Convert.ToBase64String(request.Image.Bytes.Span));
+        }
+        promptBuilder.AppendLine();
+        promptBuilder.Append("Assistant:");
+
+        if (imagesList.Count == 0)
         {
             return new
             {
                 model = modelId,
-                prompt = $"{request.Profile.SystemPrompt}\n\n{request.Question}",
+                prompt = promptBuilder.ToString(),
                 stream = true,
                 options = new
                 {
@@ -187,12 +226,9 @@ public sealed class OllamaProvider : IAiProvider
         return new
         {
             model = modelId,
-            prompt = $"{request.Profile.SystemPrompt}\n\n{request.Question}",
+            prompt = promptBuilder.ToString(),
             stream = true,
-            images = new[]
-            {
-                Convert.ToBase64String(request.Image.Bytes.Span),
-            },
+            images = imagesList.ToArray(),
             options = new
             {
                 temperature = request.Profile.Temperature,
