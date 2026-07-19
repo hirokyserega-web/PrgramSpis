@@ -19,14 +19,15 @@ Snapshot of work done and what remains.
 - Phase 13: full chat view, in-memory session flow, profiles, and settings surfaces.
 - Phase 14: window capture exclusion best-effort (via SetWindowDisplayAffinity API), forbidden window/process checks, privacy warning before cloud send.
 - Phase 15: structured diagnostics, redaction, disposal/shutdown hardening, and broader test coverage.
+- Phase 16: GitHub Actions CI.
+- Phase 17: Windows installer (Inno Setup configuration).
+- Phase 18: GitHub Releases and auto-update pipeline (automated release workflow).
 - Documentation: architecture notes and public scope updated.
 - Verification: `dotnet restore`, `dotnet format --verify-no-changes`, `dotnet build -c Release --no-restore`, `dotnet test -c Release --no-build`, publish, and smoke run passed.
 
 ## Remaining
 
-- Phase 16: GitHub Actions CI.
-- Phase 17: Windows installer.
-- Phase 18: GitHub Releases and auto-update pipeline.
+- None (all core and additional phases successfully implemented).
 
 ## Correction stage 01
 

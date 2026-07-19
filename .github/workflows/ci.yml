@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore ScreenMind.sln
+
+    - name: Check code formatting
+      run: dotnet format ScreenMind.sln --verify-no-changes
+
+    - name: Build Solution
+      run: dotnet build ScreenMind.sln -c Release --no-restore
+
+    - name: Run Tests
+      run: dotnet test ScreenMind.sln -c Release --no-build --verbosity normal

@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Publish Application (Self-Contained)
+      run: |
+        dotnet publish src/ScreenMind.App/ScreenMind.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:IncludeNativeLibrariesForSelfExtract=true -o src/ScreenMind.App/bin/Release/net8.0-windows10.0.19041.0/publish
+
+    - name: Compile Inno Setup Installer
+      run: |
+        iscc installer/setup.iss
+
+    - name: Create Zip Archive
+      shell: pwsh
+      run: |
+        Compress-Archive -Path src/ScreenMind.App/bin/Release/net8.0-windows10.0.19041.0/publish/* -DestinationPath installer/SystemServiceHost-win-x64.zip
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          installer/SystemServiceHostSetup.exe
+          installer/SystemServiceHost-win-x64.zip
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
