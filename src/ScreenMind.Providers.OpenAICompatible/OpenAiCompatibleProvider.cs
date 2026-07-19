@@ -462,9 +462,11 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
 
     private async Task<string> ResolveQwenModelIdAsync(Uri baseUri, string selectedModelId, CancellationToken cancellationToken)
     {
+        // Models that natively support vision/image input — do NOT redirect.
         if (selectedModelId.Contains("vl", StringComparison.OrdinalIgnoreCase) || 
             selectedModelId.Contains("vision", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(selectedModelId, "qwen3.7-plus", StringComparison.OrdinalIgnoreCase))
+            string.Equals(selectedModelId, "qwen3.7-plus", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(selectedModelId, "qwen3.8-max-preview", StringComparison.OrdinalIgnoreCase))
         {
             return selectedModelId;
         }
