@@ -1,11 +1,13 @@
 using ScreenMind.Core.Imaging;
+using System.Collections.Generic;
 
 namespace ScreenMind.Core.Ai;
 
 public sealed record AiRequest(
     AiProfile Profile,
-    ScreenImage Image,
+    ScreenImage? Image,
     string Question,
     IReadOnlyList<AiMessage> SessionMessages,
-    string? SessionId = null);
+    ProviderConversationState? Conversation = null);
+
 

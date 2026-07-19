@@ -1803,7 +1803,7 @@ public sealed class ChatWindow : Window, IDisposable
 
     private static string GetSessionTime(ChatSession session)
     {
-        DateTimeOffset timestamp = session.Messages.LastOrDefault()?.CreatedAt ?? session.Image.CapturedAt;
+        DateTimeOffset timestamp = session.Messages.LastOrDefault()?.CreatedAt ?? session.Image?.CapturedAt ?? DateTimeOffset.UtcNow;
         return timestamp.ToLocalTime().ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
     }
 
@@ -2092,12 +2092,12 @@ public sealed class ChatWindow : Window, IDisposable
             return;
         }
 
-        bool hasVisibleImage = session.Image.Width > 1 || session.Image.Height > 1;
+        bool hasVisibleImage = session.Image is not null && (session.Image.Width > 1 || session.Image.Height > 1);
         bool imageRendered = false;
         IReadOnlyList<AiMessage> messages = viewModel.ActiveMessages;
 
         // Status placeholder only in full UI — clean mode shows pure messages.
-        if (messages.Count == 0 && hasVisibleImage && !viewModel.CleanChatMode)
+        if (messages.Count == 0 && hasVisibleImage && !viewModel.CleanChatMode && session.Image is not null)
         {
             chatHistoryPanel.Children.Add(CreateModernMessageRow(
                 new AiMessage(AiMessageRole.User, "Скриншот готов к анализу.", session.Image.CapturedAt),
@@ -2341,7 +2341,7 @@ public sealed class ChatWindow : Window, IDisposable
     private Border? CreateActiveImagePreview()
     {
         ChatSession? session = viewModel.ActiveSession;
-        if (session is null)
+        if (session?.Image is null)
         {
             return null;
         }
@@ -2770,6 +2770,21 @@ public sealed class ChatWindow : Window, IDisposable
             {
                 sidebarGrid.IsVisible = false;
                 mainGrid.ColumnDefinitions[0] = new ColumnDefinition(0, GridUnitType.Pixel);
+            }
+        }
+        else if (change.Property == WindowStateProperty)
+        {
+            WindowState newState = (WindowState)change.NewValue!;
+            if (newState == WindowState.Minimized)
+            {
+                WindowState = WindowState.Normal;
+                Hide();
+            }
+            else if (newState == WindowState.Normal)
+            {
+                bool desired = viewModel.AlwaysOnTop;
+                Topmost = false;
+                Topmost = desired;
             }
         }
     }

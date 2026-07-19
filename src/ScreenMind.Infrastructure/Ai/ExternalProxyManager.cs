@@ -4,8 +4,10 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using ScreenMind.Core.Ai;
@@ -17,6 +19,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
     private const string PackageJsonFileName = "package.json";
 
     private readonly ConcurrentDictionary<string, Process> activeProcesses = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ConcurrentQueue<string>> proxyLogs = new(StringComparer.OrdinalIgnoreCase);
 
     public ExternalProxyManager()
     {
@@ -239,10 +242,23 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             throw new InvalidOperationException($"Proxy {proxyName} is not installed.");
         }
 
-        // Kill any process using this port to prevent EADDRINUSE
-        KillProcessOnPort(port);
+        // Check if port is already open
+        if (await IsPortOpenAsync(port, cancellationToken).ConfigureAwait(false))
+        {
+            bool isOurProxy = await RunProxyHealthCheckAsync(proxyName, port, cancellationToken).ConfigureAwait(false);
+            if (isOurProxy)
+            {
+                // It is a healthy instance of our proxy. Let's kill it so we can re-apply settings
+                KillProcessOnPort(port);
+            }
+            else
+            {
+                // Occupied by some other unknown application
+                throw new InvalidOperationException($"The configured port is occupied by another process.");
+            }
+        }
 
-        // Stop if already running
+        // Stop if already running via our dictionary
         if (activeProcesses.TryGetValue(proxyName, out Process? existing) && !existing.HasExited)
         {
             try
@@ -255,11 +271,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             }
         }
 
-        if (proxyName.Equals("FreeQwenApi", StringComparison.OrdinalIgnoreCase))
-        {
-            PatchQwenProxyRoutes(dir);
-        }
-
+        // Prepare Env Settings
         try
         {
             string envPath = Path.Combine(dir, ".env");
@@ -302,11 +314,31 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         {
             psi.EnvironmentVariables["AUTH_PATH"] = Path.Combine(dir, "auth.json");
         }
+        else if (proxyName.Equals("FreeQwenApi", StringComparison.OrdinalIgnoreCase))
+        {
+            psi.EnvironmentVariables["DEFAULT_MODEL"] = "qwen3.8-max-preview";
+        }
+
+        // Clear diagnostic log for this proxy
+        var logs = proxyLogs.GetOrAdd(proxyName, _ => new ConcurrentQueue<string>());
+        while (logs.TryDequeue(out _)) { }
 
         Process? process = new() { StartInfo = psi, EnableRaisingEvents = true };
         process.Exited += (_, _) => activeProcesses.TryRemove(proxyName, out _);
-        process.OutputDataReceived += (_, _) => { };
-        process.ErrorDataReceived += (_, _) => { };
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (e.Data is not null)
+            {
+                AddDiagnosticLine(proxyName, e.Data);
+            }
+        };
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (e.Data is not null)
+            {
+                AddDiagnosticLine(proxyName, e.Data);
+            }
+        };
 
         if (!process.Start())
         {
@@ -326,7 +358,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         if (process.HasExited)
         {
             activeProcesses.TryRemove(proxyName, out _);
-            throw new InvalidOperationException($"Proxy {proxyName} exited immediately with code {process.ExitCode}.");
+            throw new InvalidOperationException($"{proxyName} exited immediately.");
         }
 
         bool listening = await WaitForPortAsync(port, TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
@@ -345,8 +377,136 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
                 // Ignore
             }
 
-            throw new InvalidOperationException($"Proxy {proxyName} did not start listening on port {port}.");
+            throw new InvalidOperationException($"{proxyName} did not start listening on the configured port.");
         }
+
+        // Execute health check validation
+        bool healthy = await RunProxyHealthCheckAsync(proxyName, port, cancellationToken).ConfigureAwait(false);
+        if (!healthy)
+        {
+            activeProcesses.TryRemove(proxyName, out _);
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(true);
+                }
+            }
+            catch
+            {
+                // Ignore
+            }
+
+            // Determine if it was due to authentication or general failure
+            bool needsAuth = CheckLogsForAuthFailure(proxyName);
+            if (needsAuth)
+            {
+                throw new InvalidOperationException($"{proxyName} requires authentication.");
+            }
+            throw new InvalidOperationException($"{proxyName} health check failed.");
+        }
+    }
+
+    private void AddDiagnosticLine(string proxyName, string line)
+    {
+        string sanitized = SanitizeDiagnosticLine(line);
+        var logs = proxyLogs.GetOrAdd(proxyName, _ => new ConcurrentQueue<string>());
+        logs.Enqueue(sanitized);
+        while (logs.Count > 100)
+        {
+            logs.TryDequeue(out _);
+        }
+    }
+
+    private static string SanitizeDiagnosticLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line)) return line;
+
+        string sanitized = line;
+
+        // Redact typical sensitive values
+        sanitized = Regex.Replace(sanitized, @"(?i)(cookie|token|auth|key|secret|password|session_token|session)\s*[:=]\s*[^\s;]+", "$1=REDACTED");
+        
+        // Redact base64 patterns (e.g. long alphanumeric chains with ending == or /+)
+        sanitized = Regex.Replace(sanitized, @"(?:[A-Za-z0-9+/]{40,})={0,2}", "[BASE64_REDACTED]");
+        
+        // Redact file paths to session files
+        sanitized = Regex.Replace(sanitized, @"[a-zA-Z]:\\[^\s]*session[^\s]*", "[PATH_REDACTED]");
+        sanitized = Regex.Replace(sanitized, @"/[^\s]*/session/[^\s]*", "[PATH_REDACTED]");
+
+        return sanitized;
+    }
+
+    private bool CheckLogsForAuthFailure(string proxyName)
+    {
+        if (proxyLogs.TryGetValue(proxyName, out var logs))
+        {
+            foreach (var line in logs)
+            {
+                if (line.Contains("Не удалось получить токен авторизации", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("authentication is required", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("Браузер не инициализирован", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static async Task<bool> RunProxyHealthCheckAsync(string proxyName, int port, CancellationToken cancellationToken)
+    {
+        using HttpClient client = new();
+        client.Timeout = TimeSpan.FromSeconds(5);
+        try
+        {
+            string url = proxyName.Equals("FreeQwenApi", StringComparison.OrdinalIgnoreCase)
+                ? $"http://localhost:{port}/api/health"
+                : $"http://localhost:{port}/api/health";
+
+            HttpResponseMessage response;
+            try
+            {
+                response = await client.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                url = $"http://localhost:{port}/health";
+                response = await client.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            }
+
+            using (response)
+            {
+                if (!response.IsSuccessStatusCode)
+                {
+                    return false;
+                }
+
+                string content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                using JsonDocument doc = JsonDocument.Parse(content);
+                JsonElement root = doc.RootElement;
+
+                if (root.TryGetProperty("service", out JsonElement serviceProp))
+                {
+                    string? serviceName = serviceProp.GetString();
+                    if (!string.Equals(serviceName, proxyName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+                }
+
+                if (root.TryGetProperty("ok", out JsonElement okProp) && okProp.GetBoolean())
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+        return false;
     }
 
     public Task StopAsync(string proxyName, CancellationToken cancellationToken)
@@ -457,7 +617,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         }
         catch
         {
-            // Fall through to common proxy entry point names.
+            // Fall through
         }
 
         string[] candidates =
@@ -561,45 +721,5 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             }
         }
         activeProcesses.Clear();
-    }
-
-    private static void PatchQwenProxyRoutes(string proxyDir)
-    {
-        try
-        {
-            string routesPath = Path.Combine(proxyDir, "src", "api", "routes.js");
-            if (!File.Exists(routesPath)) return;
-
-            string content = File.ReadAllText(routesPath);
-            bool modified = false;
-
-            // Replace with \r\n line endings
-            string targetWindows = "                    't2t',\r\n                    null,\r\n                    true,\r\n                    0,";
-            string replacementWindows = "                    (files && files.length > 0) ? 'only_file' : 't2t',\r\n                    null,\r\n                    true,\r\n                    0,";
-            if (content.Contains(targetWindows))
-            {
-                content = content.Replace(targetWindows, replacementWindows);
-                modified = true;
-            }
-
-            // Replace with \n line endings
-            string targetUnix = "                    't2t',\n                    null,\n                    true,\n                    0,";
-            string replacementUnix = "                    (files && files.length > 0) ? 'only_file' : 't2t',\n                    null,\n                    true,\n                    0,";
-            if (content.Contains(targetUnix))
-            {
-                content = content.Replace(targetUnix, replacementUnix);
-                modified = true;
-            }
-
-            if (modified)
-            {
-                File.WriteAllText(routesPath, content, System.Text.Encoding.UTF8);
-                Console.WriteLine("[ExternalProxyManager] Successfully patched Qwen proxy routes.js with only_file chatType support!");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[ExternalProxyManager] Failed to patch Qwen proxy routes: {ex}");
-        }
     }
 }

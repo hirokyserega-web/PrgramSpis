@@ -56,6 +56,15 @@ public sealed class ScreenImage : IDisposable
             ? throw new ObjectDisposedException(nameof(ScreenImage))
             : bytes;
 
+    public ScreenImage Clone()
+    {
+        byte[]? currentBytes = bytes;
+        ObjectDisposedException.ThrowIf(currentBytes is null, this);
+        byte[] copy = new byte[currentBytes.Length];
+        Array.Copy(currentBytes, copy, currentBytes.Length);
+        return new ScreenImage(copy, MediaType, Format, Width, Height, CapturedAt);
+    }
+
     public void Dispose()
     {
         byte[]? buffer = Interlocked.Exchange(ref bytes, null);
@@ -65,4 +74,5 @@ public sealed class ScreenImage : IDisposable
         }
     }
 }
+
 

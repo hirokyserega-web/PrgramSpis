@@ -1,4 +1,7 @@
+using System;
 using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Threading;
@@ -23,6 +26,7 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
     private readonly IServiceProvider serviceProvider;
 
     private ChatWindow? activeWindow;
+    private Task? windowCreationTask;
 
     public void Dispose()
     {
@@ -51,6 +55,50 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
         this.serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
     }
 
+    private async Task RestoreWindowAsync(bool activate)
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            await Dispatcher.UIThread.InvokeAsync(() => RestoreWindowAsync(activate));
+            return;
+        }
+
+        if (activeWindow is null)
+        {
+            await EnsureWindowCreatedAsync(activate);
+        }
+
+        if (activeWindow is not null)
+        {
+            if (activeWindow.WindowState == WindowState.Minimized)
+            {
+                activeWindow.WindowState = WindowState.Normal;
+            }
+
+            activeWindow.Show();
+
+            // Wait for next UI tick
+            await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+
+            ApplyWindowPreferences(activeWindow);
+            ApplyCaptureExclusion(activeWindow);
+            ApplyClickThrough(activeWindow);
+
+            if (activate)
+            {
+                activeWindow.Activate();
+            }
+        }
+    }
+
+    private static void ApplyWindowPreferences(ChatWindow? window)
+    {
+        if (window is null) return;
+        bool desired = window.ViewModel.AlwaysOnTop;
+        window.Topmost = false;
+        window.Topmost = desired;
+    }
+
     public void Show()
     {
         if (Application.Current is null)
@@ -62,19 +110,7 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
         {
             try
             {
-                if (activeWindow is not null)
-                {
-                    if (activeWindow.WindowState == WindowState.Minimized)
-                    {
-                        activeWindow.WindowState = WindowState.Normal;
-                    }
-                    activeWindow.Show();
-                    ApplyCaptureExclusion(activeWindow);
-                    activeWindow.Activate();
-                    return;
-                }
-
-                await EnsureWindowCreatedAsync(activate: true);
+                await RestoreWindowAsync(activate: true);
             }
             catch (Exception exception)
             {
@@ -87,8 +123,6 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
 
     public void PrepareForStealthCapture()
     {
-        // Must run synchronously when already on the UI thread so exclusion is applied
-        // before GDI capture starts. Posting would race with CaptureAsync.
         void Apply()
         {
             try
@@ -98,8 +132,6 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
                     return;
                 }
 
-                // Re-apply exclusion immediately before capture. Do not Hide/Show/Activate —
-                // those transfer focus and produce a visible active-window flash.
                 ApplyCaptureExclusion(activeWindow);
             }
             catch (Exception ex)
@@ -120,101 +152,148 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
 
     private async Task EnsureWindowCreatedAsync(bool activate)
     {
-        IExternalProxyManager proxyManager = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<IExternalProxyManager>(serviceProvider);
-        ChatViewModel viewModel = new(sessionManager, orchestrator, settingsStore, secretStore, hotkeyService, proxyManager);
-        viewModel.PropertyChanged += (sender, e) =>
+        if (activeWindow is not null)
         {
-            if (e.PropertyName == nameof(ChatViewModel.ClickThroughMode))
+            if (activate)
             {
-                ApplyClickThrough(activeWindow);
+                activeWindow.Activate();
             }
-        };
-        try
-        {
-            await viewModel.LoadWindowPreferencesAsync(CancellationToken.None);
-        }
-        catch (Exception exception)
-        {
-            Debug.WriteLine($"Failed to load window preferences: {exception}");
+            return;
         }
 
-        viewModel.NewCaptureRequested += async (s, e) =>
+        if (windowCreationTask is not null)
         {
+            await windowCreationTask.ConfigureAwait(false);
             if (activeWindow is not null)
             {
+                if (activate)
+                {
+                    await Dispatcher.UIThread.InvokeAsync(() => activeWindow.Activate());
+                }
+                return;
+            }
+        }
+
+        var tcs = new TaskCompletionSource();
+        windowCreationTask = tcs.Task;
+
+        try
+        {
+            IExternalProxyManager proxyManager = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<IExternalProxyManager>(serviceProvider);
+            ChatViewModel viewModel = new(sessionManager, orchestrator, settingsStore, secretStore, hotkeyService, proxyManager);
+            
+            viewModel.PropertyChanged += (sender, e) =>
+            {
+                if (e.PropertyName == nameof(ChatViewModel.ClickThroughMode))
+                {
+                    ApplyClickThrough(activeWindow);
+                }
+                else if (e.PropertyName == nameof(ChatViewModel.AlwaysOnTop))
+                {
+                    ApplyWindowPreferences(activeWindow);
+                }
+            };
+
+            try
+            {
+                await viewModel.LoadWindowPreferencesAsync(CancellationToken.None);
+            }
+            catch (Exception exception)
+            {
+                Debug.WriteLine($"Failed to load window preferences: {exception}");
+            }
+
+            viewModel.NewCaptureRequested += async (s, e) =>
+            {
+                if (activeWindow is not null)
+                {
+                    try
+                    {
+                        viewModel.ErrorMessage = string.Empty;
+                        PrepareForStealthCapture();
+                        IRegionSelectionService regionSelectionService = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<IRegionSelectionService>(serviceProvider);
+                        ICompactOverlayService compactOverlayService = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<ICompactOverlayService>(serviceProvider);
+                        RegionSelectionResult result = await regionSelectionService.SelectAsync(CancellationToken.None);
+                        if (result.IsConfirmed && result.Bounds is not null)
+                        {
+                            await compactOverlayService.ShowAsync(new CaptureTarget.Region(result.Bounds.Value), CancellationToken.None);
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        viewModel.ErrorMessage = $"Screenshot failed: {exception.Message}";
+                    }
+                }
+            };
+
+            viewModel.ActiveWindowCaptureRequested += async (_, _) =>
+            {
+                if (activeWindow is null)
+                {
+                    return;
+                }
+
                 try
                 {
                     viewModel.ErrorMessage = string.Empty;
                     PrepareForStealthCapture();
-                    IRegionSelectionService regionSelectionService = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<IRegionSelectionService>(serviceProvider);
                     ICompactOverlayService compactOverlayService = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<ICompactOverlayService>(serviceProvider);
-                    RegionSelectionResult result = await regionSelectionService.SelectAsync(CancellationToken.None);
-                    if (result.IsConfirmed && result.Bounds is not null)
-                    {
-                        await compactOverlayService.ShowAsync(new CaptureTarget.Region(result.Bounds.Value), CancellationToken.None);
-                    }
+                    await compactOverlayService.ShowAsync(new CaptureTarget.ActiveWindow(), CancellationToken.None);
                 }
                 catch (Exception exception)
                 {
                     viewModel.ErrorMessage = $"Screenshot failed: {exception.Message}";
                 }
-            }
-        };
+            };
 
-        viewModel.ActiveWindowCaptureRequested += async (_, _) =>
-        {
-            if (activeWindow is null)
+            viewModel.MonitorCaptureRequested += async (_, _) =>
             {
-                return;
-            }
+                if (activeWindow is null)
+                {
+                    return;
+                }
 
-            try
-            {
-                viewModel.ErrorMessage = string.Empty;
-                PrepareForStealthCapture();
-                ICompactOverlayService compactOverlayService = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<ICompactOverlayService>(serviceProvider);
-                await compactOverlayService.ShowAsync(new CaptureTarget.ActiveWindow(), CancellationToken.None);
-            }
-            catch (Exception exception)
-            {
-                viewModel.ErrorMessage = $"Screenshot failed: {exception.Message}";
-            }
-        };
+                try
+                {
+                    viewModel.ErrorMessage = string.Empty;
+                    PrepareForStealthCapture();
+                    ICompactOverlayService compactOverlayService = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<ICompactOverlayService>(serviceProvider);
+                    await compactOverlayService.ShowAsync(new CaptureTarget.MonitorWithCursor(), CancellationToken.None);
+                }
+                catch (Exception exception)
+                {
+                    viewModel.ErrorMessage = $"Screenshot failed: {exception.Message}";
+                }
+            };
 
-        viewModel.MonitorCaptureRequested += async (_, _) =>
-        {
-            if (activeWindow is null)
+            activeWindow = new ChatWindow(viewModel);
+            activeWindow.Closed += (sender, args) => activeWindow = null;
+            activeWindow.Opened += (_, _) =>
             {
-                return;
-            }
-
-            try
-            {
-                viewModel.ErrorMessage = string.Empty;
-                PrepareForStealthCapture();
-                ICompactOverlayService compactOverlayService = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<ICompactOverlayService>(serviceProvider);
-                await compactOverlayService.ShowAsync(new CaptureTarget.MonitorWithCursor(), CancellationToken.None);
-            }
-            catch (Exception exception)
-            {
-                viewModel.ErrorMessage = $"Screenshot failed: {exception.Message}";
-            }
-        };
-
-        activeWindow = new ChatWindow(viewModel);
-        activeWindow.Closed += (sender, args) => activeWindow = null;
-        activeWindow.Opened += (_, _) =>
-        {
+                ApplyCaptureExclusion(activeWindow);
+                ApplyClickThrough(activeWindow);
+                ApplyWindowPreferences(activeWindow);
+            };
+            activeWindow.ShowActivated = activate;
+            activeWindow.Show();
             ApplyCaptureExclusion(activeWindow);
             ApplyClickThrough(activeWindow);
-        };
-        activeWindow.ShowActivated = activate;
-        activeWindow.Show();
-        ApplyCaptureExclusion(activeWindow);
-        ApplyClickThrough(activeWindow);
-        if (activate)
+            ApplyWindowPreferences(activeWindow);
+            if (activate)
+            {
+                activeWindow.Activate();
+            }
+
+            tcs.SetResult();
+        }
+        catch (Exception ex)
         {
-            activeWindow.Activate();
+            tcs.SetException(ex);
+            throw;
+        }
+        finally
+        {
+            windowCreationTask = null;
         }
     }
 
@@ -271,15 +350,7 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
         {
             try
             {
-                if (activeWindow is null)
-                {
-                    await EnsureWindowCreatedAsync(activate: false);
-                    for (int i = 0; i < 20 && activeWindow is null; i++)
-                    {
-                        await Task.Delay(50);
-                    }
-                }
-
+                await RestoreWindowAsync(activate: false);
                 if (activeWindow is not null)
                 {
                     await activeWindow.ViewModel.ToggleCleanChatModeAsync();
@@ -298,15 +369,7 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
         {
             try
             {
-                if (activeWindow is null)
-                {
-                    await EnsureWindowCreatedAsync(activate: false);
-                    for (int i = 0; i < 20 && activeWindow is null; i++)
-                    {
-                        await Task.Delay(50);
-                    }
-                }
-
+                await RestoreWindowAsync(activate: false);
                 if (activeWindow is not null)
                 {
                     await activeWindow.ViewModel.ToggleClickThroughModeAsync();
@@ -327,36 +390,13 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
         {
             try
             {
-                if (activeWindow is null)
-                {
-                    // Create window for analysis UI updates, but do not steal foreground focus.
-                    await EnsureWindowCreatedAsync(activate: false);
-                    for (int i = 0; i < 20 && activeWindow is null; i++)
-                    {
-                        await Task.Delay(50);
-                    }
-                }
+                await RestoreWindowAsync(activate: false);
 
                 if (activeWindow is null)
                 {
                     throw new InvalidOperationException("Chat window is not available.");
                 }
 
-                // Keep the window available for streaming UI updates, but never Activate /
-                // SetForegroundWindow — that is what causes the visible active-window flash.
-                if (!activeWindow.IsVisible)
-                {
-                    activeWindow.ShowActivated = false;
-                    activeWindow.Show();
-                }
-
-                if (activeWindow.WindowState == WindowState.Minimized)
-                {
-                    // Restore without activating so the user's focused app stays in front.
-                    activeWindow.WindowState = WindowState.Normal;
-                }
-
-                ApplyCaptureExclusion(activeWindow);
                 await activeWindow.ViewModel.AnalyzeImageSilentlyAsync(image);
             }
             catch (Exception exception)

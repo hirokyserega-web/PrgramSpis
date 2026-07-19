@@ -108,7 +108,7 @@ public static class SettingsSchemaMigrator
 
     private static double ClampFinite(double value, double min, double max, double fallback)
     {
-        if (!double.IsFinite(value) || value <= 0d)
+        if (!double.IsFinite(value))
         {
             return fallback;
         }

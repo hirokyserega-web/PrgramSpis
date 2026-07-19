@@ -119,7 +119,7 @@ public sealed class UiSettings
 {
     public const double MinOverlayOpacity = 0d;
     public const double MaxOverlayOpacity = 1d;
-    public const double MinUiScale = 0.50d;
+    public const double MinUiScale = 0.75d;
     public const double MaxUiScale = 1.5d;
 
     public string Theme { get; set; } = "system";

@@ -405,6 +405,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 models.Add("qwen-3.7-plus");
                 models.Add("qwen-3.7-max");
                 models.Add("qwen3.7-max");
+                models.Add("qwen3.8-max-preview");
                 models.Add("qwen3-vl-plus");
                 models.Add("qwen-vl-plus");
                 models.Add("qwen-vl-max");
@@ -593,10 +594,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 ?? settings.Profiles.Items.FirstOrDefault()
                 ?? new AiProfile("universal", "Universal", "openai", "gpt-4o-mini", "Analyze the screenshot and answer clearly.");
 
-            // Create a text-only session with a 1x1 valid transparent PNG placeholder image
-            byte[] pngBytes = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=");
-            ScreenImage placeholder = new(pngBytes, "image/png", ScreenImageFormat.Png, 1, 1, DateTimeOffset.UtcNow);
-            ChatSession createdSession = sessionManager.CreateSession(profile, placeholder);
+            ChatSession createdSession = sessionManager.CreateSession(profile, null);
             Sessions.Add(createdSession);
             ActiveSession = createdSession;
         }
@@ -617,16 +615,28 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             }
             else
             {
-                byte[] pngBytes = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=");
-                messageImage = new ScreenImage(pngBytes, "image/png", ScreenImageFormat.Png, 1, 1, DateTimeOffset.UtcNow);
+                messageImage = null;
             }
         }
         else
         {
-            session.Image = attachedImage!;
+            if (session.Image is not null && !ReferenceEquals(session.Image, attachedImage))
+            {
+                session.Image.Dispose();
+            }
+            session.Image = attachedImage;
         }
 
-        AiMessage userMessage = new(AiMessageRole.User, userText, DateTimeOffset.UtcNow, messageImage!);
+        string providerId = session.Profile.ProviderId;
+        if (session.ConversationState is null || session.ConversationState.ProviderId != providerId)
+        {
+            session.ConversationState = new ProviderConversationState(
+                providerId,
+                Guid.NewGuid().ToString());
+        }
+
+        ScreenImage? userMsgImage = messageImage?.Clone();
+        AiMessage userMessage = new(AiMessageRole.User, userText, DateTimeOffset.UtcNow, userMsgImage);
         AiMessage assistantMessage = new(AiMessageRole.Assistant, string.Empty, DateTimeOffset.UtcNow);
 
         await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
@@ -649,10 +659,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
             AiRequest request = new(
                 effectiveProfile,
-                messageImage,
+                messageImage?.Clone(),
                 userText,
                 session.Messages.Take(session.Messages.Count - 2).ToArray(),
-                session.Id);
+                session.ConversationState);
 
             StringBuilder accumulatedText = new();
             DateTimeOffset lastUiUpdate = DateTimeOffset.MinValue;
@@ -1058,6 +1068,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         Prompt1HotkeyText = FormatHotkey(settings.Hotkeys.PromptHotkey1);
         Prompt2HotkeyText = FormatHotkey(settings.Hotkeys.PromptHotkey2);
         Prompt3HotkeyText = FormatHotkey(settings.Hotkeys.PromptHotkey3);
+        KeepSessionHistory = settings.Capture.KeepSessionHistory;
     }
 
     [RelayCommand]
@@ -1322,18 +1333,20 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     public async Task AnalyzeImageSilentlyAsync(ScreenImage image)
     {
         CancelActiveRequest();
-        bool sessionCreated = false;
         try
         {
             ScreenMindSettings settings = await settingsStore.LoadAsync(CancellationToken.None);
             if (settings.Capture.KeepSessionHistory && ActiveSession is not null)
             {
+                if (ActiveSession.Image is not null && !ReferenceEquals(ActiveSession.Image, image))
+                {
+                    ActiveSession.Image.Dispose();
+                }
                 ActiveSession.Image = image;
             }
             else
             {
                 await CreateSessionFromImageAsync(image, CancellationToken.None);
-                sessionCreated = true;
             }
 
             string prompt = !string.IsNullOrWhiteSpace(settings.Capture.DefaultPrompt)
@@ -1345,7 +1358,16 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         }
         catch (Exception exception)
         {
-            if (!sessionCreated)
+            bool isOwned = false;
+            foreach (var s in sessionManager.Sessions)
+            {
+                if (ReferenceEquals(s.Image, image))
+                {
+                    isOwned = true;
+                    break;
+                }
+            }
+            if (!isOwned)
             {
                 image.Dispose();
             }
@@ -1555,6 +1577,18 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         // Strip <thought>...</thought>
         text = StripTag(text, "<thought>", "</thought>");
 
+        // Strip raw reasoning blocks ending with "Final" markers
+        string[] markers = ["**Final Answer:**", "Final Answer:", "**Final:**", "Final:"];
+        foreach (string marker in markers)
+        {
+            int markerIndex = text.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (markerIndex >= 0)
+            {
+                text = text.Substring(markerIndex + marker.Length);
+                break;
+            }
+        }
+
         return text.Trim();
     }
 
@@ -1576,6 +1610,20 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             startIndex = text.IndexOf(openTag, StringComparison.OrdinalIgnoreCase);
         }
         return text;
+    }
+
+    partial void OnAlwaysOnTopChanged(bool value)
+    {
+        System.Threading.Tasks.Task.Run(async () =>
+        {
+            try
+            {
+                ScreenMindSettings settings = await settingsStore.LoadAsync(CancellationToken.None);
+                settings.Ui.AlwaysOnTop = value;
+                await settingsStore.SaveAsync(settings, CancellationToken.None);
+            }
+            catch {}
+        });
     }
 
     public void Dispose()

@@ -1,10 +1,18 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using ScreenMind.AI;
 using ScreenMind.Core.Ai;
 using ScreenMind.Core.Imaging;
 using ScreenMind.Core.Privacy;
+using ScreenMind.Providers.OpenAICompatible.Qwen;
 
 namespace ScreenMind.Providers.OpenAICompatible;
 
@@ -17,15 +25,18 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
     private readonly HttpClient httpClient;
     private readonly ProviderConfigurationResolver configurationResolver;
     private readonly ISecretStore secretStore;
+    private readonly Qwen.IQwenProxyClient qwenProxyClient;
 
     public OpenAiCompatibleProvider(
         HttpClient httpClient,
         ProviderConfigurationResolver configurationResolver,
-        ISecretStore secretStore)
+        ISecretStore secretStore,
+        Qwen.IQwenProxyClient? qwenProxyClient = null)
     {
         this.httpClient = httpClient;
         this.configurationResolver = configurationResolver;
         this.secretStore = secretStore;
+        this.qwenProxyClient = qwenProxyClient ?? new Qwen.QwenProxyClient(httpClient);
     }
 
     public string Id => "openai-compatible";
@@ -48,6 +59,30 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
             yield break;
         }
 
+        bool isQwenProxy = await IsQwenProxyAsync(configuration.BaseUri, cancellationToken).ConfigureAwait(false);
+
+        string effectiveModelId = configuration.ModelId;
+        Exception? resolveException = null;
+        if (isQwenProxy && HasRealImage(request))
+        {
+            try
+            {
+                effectiveModelId = await ResolveQwenModelIdAsync(configuration.BaseUri, configuration.ModelId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                resolveException = exception;
+            }
+        }
+
+        if (resolveException is not null)
+        {
+            yield return new AiStreamEvent.Failed(
+                new AiError(AiErrorKind.UnsupportedModel, resolveException.Message),
+                DateTimeOffset.UtcNow);
+            yield break;
+        }
+
         using HttpRequestMessage httpRequest = new(HttpMethod.Post, new Uri(configuration.BaseUri, "v1/chat/completions"));
         if (!string.IsNullOrWhiteSpace(configuration.ApiKey))
         {
@@ -55,20 +90,36 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
         }
 
         string? qwenCookie = await secretStore.GetAsync("qwen-cookie", cancellationToken).ConfigureAwait(false);
-        if (IsQwenProxyUri(configuration.BaseUri) && !string.IsNullOrWhiteSpace(qwenCookie))
+        if (isQwenProxy && !string.IsNullOrWhiteSpace(qwenCookie))
         {
             httpRequest.Headers.TryAddWithoutValidation("Cookie", qwenCookie);
         }
 
         object? uploadedFile = null;
-        if (IsQwenProxyUri(configuration.BaseUri) && HasRealImage(request))
+        Exception? uploadException = null;
+        if (isQwenProxy && HasRealImage(request) && request.Image is not null)
         {
-            uploadedFile = await UploadImageToProxyAsync(configuration.BaseUri, request.Image, qwenCookie, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                uploadedFile = await qwenProxyClient.UploadImageAsync(configuration.BaseUri, request.Image, qwenCookie, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                uploadException = exception;
+            }
+        }
+
+        if (uploadException is not null)
+        {
+            yield return new AiStreamEvent.Failed(
+                new AiError(AiErrorKind.Unknown, uploadException.Message),
+                DateTimeOffset.UtcNow);
+            yield break;
         }
 
         httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         httpRequest.Content = new StringContent(
-            JsonSerializer.Serialize(BuildBody(request, configuration.ModelId, uploadedFile)),
+            JsonSerializer.Serialize(BuildBody(request, effectiveModelId, uploadedFile, isQwenProxy)),
             Encoding.UTF8,
             "application/json");
 
@@ -158,7 +209,8 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
         }
 
         string? qwenCookie = await secretStore.GetAsync("qwen-cookie", cancellationToken).ConfigureAwait(false);
-        if (IsQwenProxyUri(configuration.BaseUri) && !string.IsNullOrWhiteSpace(qwenCookie))
+        bool isQwenProxy = await IsQwenProxyAsync(configuration.BaseUri, cancellationToken).ConfigureAwait(false);
+        if (isQwenProxy && !string.IsNullOrWhiteSpace(qwenCookie))
         {
             request.Headers.TryAddWithoutValidation("Cookie", qwenCookie);
         }
@@ -182,7 +234,8 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
         }
 
         string? qwenCookie = await secretStore.GetAsync("qwen-cookie", cancellationToken).ConfigureAwait(false);
-        if (IsQwenProxyUri(configuration.BaseUri) && !string.IsNullOrWhiteSpace(qwenCookie))
+        bool isQwenProxy = await IsQwenProxyAsync(configuration.BaseUri, cancellationToken).ConfigureAwait(false);
+        if (isQwenProxy && !string.IsNullOrWhiteSpace(qwenCookie))
         {
             request.Headers.TryAddWithoutValidation("Cookie", qwenCookie);
         }
@@ -204,7 +257,7 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
             cancellationToken);
     }
 
-    private static object[] BuildMessages(AiRequest request, object? uploadedFile = null)
+    private static object[] BuildMessages(AiRequest request, object? uploadedFile, bool isQwenProxy)
     {
         var messagesList = new List<object>();
 
@@ -225,26 +278,37 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
             {
                 if (msg.Role == AiMessageRole.User)
                 {
-                    if (msg.Image is not null && (msg.Image.Width != 1 || msg.Image.Height != 1))
-                    {
-                        string imageData = Convert.ToBase64String(msg.Image.Bytes.Span);
-                        messagesList.Add(new
-                        {
-                            role = "user",
-                            content = new object[]
-                            {
-                                new { type = "text", text = msg.Content },
-                                new { type = "image_url", image_url = new { url = $"data:{msg.Image.MediaType};base64,{imageData}" } }
-                            }
-                        });
-                    }
-                    else
+                    if (isQwenProxy)
                     {
                         messagesList.Add(new
                         {
                             role = "user",
                             content = msg.Content
                         });
+                    }
+                    else
+                    {
+                        if (msg.Image is not null && (msg.Image.Width != 1 || msg.Image.Height != 1))
+                        {
+                            string imageData = Convert.ToBase64String(msg.Image.Bytes.Span);
+                            messagesList.Add(new
+                            {
+                                role = "user",
+                                content = new object[]
+                                {
+                                    new { type = "text", text = msg.Content },
+                                    new { type = "image_url", image_url = new { url = $"data:{msg.Image.MediaType};base64,{imageData}" } }
+                                }
+                            });
+                        }
+                        else
+                        {
+                            messagesList.Add(new
+                            {
+                                role = "user",
+                                content = msg.Content
+                            });
+                        }
                     }
                 }
                 else if (msg.Role == AiMessageRole.Assistant)
@@ -297,44 +361,60 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
         return messagesList.ToArray();
     }
 
-    private static Dictionary<string, object> BuildBody(AiRequest request, string modelId, object? uploadedFile = null)
+    private static Dictionary<string, object> BuildBody(
+        AiRequest request,
+        string modelId,
+        object? uploadedFile,
+        bool isQwenProxy)
     {
         string effectiveModelId = GetEffectiveModelId(request, modelId);
-        object[] messages = BuildMessages(request, uploadedFile);
+        object[] messages = BuildMessages(request, uploadedFile, isQwenProxy);
 
-        if (!string.IsNullOrWhiteSpace(request.SessionId))
-        {
-            var bodyObj = new Dictionary<string, object>
-            {
-                { "model", effectiveModelId },
-                { "stream", true },
-                { "chatId", request.SessionId },
-                { "chat_id", request.SessionId },
-                { "conversation_id", request.SessionId },
-                { "messages", messages }
-            };
-
-            if (uploadedFile is not null)
-            {
-                bodyObj["files"] = new object[] { uploadedFile };
-            }
-
-            return bodyObj;
-        }
-
-        var defaultBodyObj = new Dictionary<string, object>
+        var bodyObj = new Dictionary<string, object>
         {
             { "model", effectiveModelId },
             { "stream", true },
             { "messages", messages }
         };
 
-        if (uploadedFile is not null)
+        if (isQwenProxy)
         {
-            defaultBodyObj["files"] = new object[] { uploadedFile };
+            if (request.Conversation is not null)
+            {
+                bodyObj["conversation_id"] = request.Conversation.ClientConversationId;
+                if (!string.IsNullOrWhiteSpace(request.Conversation.UpstreamChatId))
+                {
+                    bodyObj["chatId"] = request.Conversation.UpstreamChatId;
+                    bodyObj["chat_id"] = request.Conversation.UpstreamChatId;
+                }
+                if (!string.IsNullOrWhiteSpace(request.Conversation.ParentId))
+                {
+                    bodyObj["parentId"] = request.Conversation.ParentId;
+                    bodyObj["parent_id"] = request.Conversation.ParentId;
+                }
+            }
+
+            if (uploadedFile is not null)
+            {
+                bodyObj["files"] = new object[] { uploadedFile };
+            }
+        }
+        else
+        {
+            if (request.Conversation is not null)
+            {
+                bodyObj["chatId"] = request.Conversation.ClientConversationId;
+                bodyObj["chat_id"] = request.Conversation.ClientConversationId;
+                bodyObj["conversation_id"] = request.Conversation.ClientConversationId;
+            }
+
+            if (uploadedFile is not null)
+            {
+                bodyObj["files"] = new object[] { uploadedFile };
+            }
         }
 
-        return defaultBodyObj;
+        return bodyObj;
     }
 
     private static string GetEffectiveModelId(AiRequest request, string modelId)
@@ -348,7 +428,7 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
     }
 
     private static bool HasRealImage(AiRequest request)
-        => request.Image.Width != 1 || request.Image.Height != 1;
+        => request.Image is not null && (request.Image.Width != 1 || request.Image.Height != 1);
 
     private static bool IsQwenTextModel(string modelId)
     {
@@ -356,16 +436,52 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
             && !modelId.Contains("-vl", StringComparison.OrdinalIgnoreCase)
             && !modelId.Contains("vision", StringComparison.OrdinalIgnoreCase)
             && !modelId.Contains("omni", StringComparison.OrdinalIgnoreCase)
-            && !modelId.Contains("3.7", StringComparison.OrdinalIgnoreCase);
+            && !string.Equals(modelId, "qwen3.7-plus", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsDeepseekModel(string modelId)
         => modelId.StartsWith("deepseek", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsQwenProxyUri(Uri baseUri)
+    private async Task<bool> IsQwenProxyAsync(Uri baseUri, CancellationToken cancellationToken)
     {
-        return baseUri.IsLoopback
-            && baseUri.AbsolutePath.Trim('/').StartsWith("api", StringComparison.OrdinalIgnoreCase);
+        if (!baseUri.IsLoopback || !baseUri.AbsolutePath.Trim('/').StartsWith("api", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        try
+        {
+            var capabilities = await qwenProxyClient.GetCapabilitiesAsync(baseUri, cancellationToken).ConfigureAwait(false);
+            return capabilities.IsReady && string.Equals(capabilities.Service, "FreeQwenApi", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task<string> ResolveQwenModelIdAsync(Uri baseUri, string selectedModelId, CancellationToken cancellationToken)
+    {
+        if (selectedModelId.Contains("vl", StringComparison.OrdinalIgnoreCase) || 
+            selectedModelId.Contains("vision", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(selectedModelId, "qwen3.7-plus", StringComparison.OrdinalIgnoreCase))
+        {
+            return selectedModelId;
+        }
+
+        var models = await qwenProxyClient.GetModelsAsync(baseUri, cancellationToken).ConfigureAwait(false);
+        if (models.Count == 0)
+        {
+            return "qwen3-vl-plus";
+        }
+
+        string? visionModel = models.FirstOrDefault(m => m.Contains("vl", StringComparison.OrdinalIgnoreCase) || m.Contains("vision", StringComparison.OrdinalIgnoreCase));
+        if (visionModel is not null)
+        {
+            return visionModel;
+        }
+
+        throw new QwenProxyException("No vision-capable model is available on the Qwen proxy.");
     }
 
     private static async Task<AiError> CreateHttpErrorAsync(
@@ -420,9 +536,7 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
                 if (error.ValueKind == JsonValueKind.Object
                     && error.TryGetProperty("message", out JsonElement nestedMessage)
                     && nestedMessage.ValueKind == JsonValueKind.String)
-                {
                     return nestedMessage.GetString();
-                }
             }
 
             if (root.TryGetProperty("message", out JsonElement message)
@@ -460,62 +574,5 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
             document = null;
             return false;
         }
-    }
-
-    private async Task<object?> UploadImageToProxyAsync(
-        Uri baseUri,
-        ScreenImage image,
-        string? qwenCookie,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            Uri uploadUri = baseUri.ToString().EndsWith('/')
-                ? new Uri(baseUri, "files/upload")
-                : new Uri(new Uri(baseUri.ToString() + "/"), "files/upload");
-
-            using HttpRequestMessage httpRequest = new(HttpMethod.Post, uploadUri);
-            if (!string.IsNullOrWhiteSpace(qwenCookie))
-            {
-                httpRequest.Headers.TryAddWithoutValidation("Cookie", qwenCookie);
-            }
-
-            using MultipartFormDataContent form = new();
-            using ByteArrayContent fileContent = new(image.Bytes.ToArray());
-            fileContent.Headers.ContentType = new MediaTypeHeaderValue(image.MediaType);
-            
-            string extension = image.Format == ScreenImageFormat.Png ? "png" : "jpg";
-            string filename = $"screenshot_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{extension}";
-            
-            form.Add(fileContent, "file", filename);
-            httpRequest.Content = form;
-
-            using HttpResponseMessage response = await httpClient.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
-            if (response.IsSuccessStatusCode)
-            {
-                string jsonString = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                using JsonDocument doc = JsonDocument.Parse(jsonString);
-                JsonElement root = doc.RootElement;
-                if (root.TryGetProperty("success", out JsonElement successProp) && successProp.GetBoolean()
-                    && root.TryGetProperty("file", out JsonElement fileProp))
-                {
-                    return new
-                    {
-                        id = fileProp.GetProperty("id").GetString(),
-                        fileId = fileProp.GetProperty("fileId").GetString(),
-                        file_path = fileProp.GetProperty("file_path").GetString(),
-                        name = fileProp.GetProperty("name").GetString(),
-                        url = fileProp.GetProperty("url").GetString(),
-                        size = fileProp.GetProperty("size").GetInt64(),
-                        type = fileProp.GetProperty("type").GetString()
-                    };
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[OpenAiCompatibleProvider] OSS upload failed: {ex}");
-        }
-        return null;
     }
 }

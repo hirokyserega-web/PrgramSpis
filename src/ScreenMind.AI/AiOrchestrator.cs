@@ -100,6 +100,7 @@ public sealed class AiOrchestrator : IAiOrchestrator, IDisposable
         finally
         {
             mainRequestGate.Release();
+            request.Image?.Dispose();
         }
     }
 

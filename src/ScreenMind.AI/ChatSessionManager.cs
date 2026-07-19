@@ -30,10 +30,9 @@ public sealed class ChatSessionManager : IChatSessionManager
         }
     }
 
-    public ChatSession CreateSession(AiProfile profile, ScreenMind.Core.Imaging.ScreenImage image)
+    public ChatSession CreateSession(AiProfile profile, ScreenMind.Core.Imaging.ScreenImage? image)
     {
         ArgumentNullException.ThrowIfNull(profile);
-        ArgumentNullException.ThrowIfNull(image);
 
         lock (gate)
         {
@@ -72,6 +71,7 @@ public sealed class ChatSessionManager : IChatSessionManager
                 {
                     currentSession = sessions.LastOrDefault();
                 }
+                session.Dispose();
             }
         }
     }
@@ -80,6 +80,10 @@ public sealed class ChatSessionManager : IChatSessionManager
     {
         lock (gate)
         {
+            foreach (var session in sessions)
+            {
+                session.Dispose();
+            }
             sessions.Clear();
             currentSession = null;
         }

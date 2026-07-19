@@ -24,6 +24,7 @@ public sealed class CompactOverlayWindow : Window
     private readonly Button closeBtn;
     private readonly Border mainBorder;
     private readonly LayoutTransformControl mainTransform;
+    private static bool isPinned = true;
 
     // Same deep-space visual language as main workspace.
     private static readonly ISolidColorBrush BgBrush = new SolidColorBrush(Color.Parse("#F5080B14"));
@@ -51,7 +52,7 @@ public sealed class CompactOverlayWindow : Window
         ExtendClientAreaChromeHints = Avalonia.Platform.ExtendClientAreaChromeHints.NoChrome;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         CanResize = true;
-        Topmost = true;
+        Topmost = isPinned;
         ShowInTaskbar = false;
         Width = 560;
         Height = 460;
@@ -121,6 +122,7 @@ public sealed class CompactOverlayWindow : Window
         topmostBtn.Click += (_, _) =>
         {
             Topmost = !Topmost;
+            isPinned = Topmost;
             topmostBtn.Opacity = Topmost ? 1 : 0.55;
         };
         headerGrid.Children.Add(topmostBtn);
