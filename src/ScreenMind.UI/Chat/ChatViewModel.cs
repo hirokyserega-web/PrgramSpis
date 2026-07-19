@@ -651,7 +651,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         CancellationTokenSource cts = activeCancellationTokenSource;
         try
         {
-            string suffix = "\n\nIMPORTANT: If you perform internal reasoning, thinking, or analysis before answering, you MUST wrap all such thoughts inside <think> and </think> tags. Never output plain text thoughts outside of these tags. The final answer must be outside the tags.";
+            string suffix = "\n\nIMPORTANT: Do NOT output any internal reasoning, thinking, planning, or analysis. Output ONLY the final answer directly. If you must reason internally, wrap ALL thoughts inside <think> and </think> tags. NEVER output plain text thoughts, analysis of the user's request, or planning text outside of these tags. Start your response with the actual answer immediately.";
             AiProfile effectiveProfile = session.Profile with
             {
                 SystemPrompt = (session.Profile.SystemPrompt ?? string.Empty) + suffix
@@ -1589,7 +1589,87 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             }
         }
 
+        // Strip inline reasoning from qwen3.8-style responses.
+        // The model often outputs analysis like "Пользователь просит/спрашивает..."
+        // or "The user asks/wants..." before the actual answer.
+        // Detect this pattern and try to extract only the answer.
+        text = StripInlineReasoning(text);
+
         return text.Trim();
+    }
+
+    private static string StripInlineReasoning(string text)
+    {
+        if (string.IsNullOrEmpty(text) || text.Length < 30) return text;
+
+        // Check if text starts with a reasoning pattern (analysis of the user request)
+        string trimmed = text.TrimStart();
+        string[] reasoningStarters =
+        [
+            "Пользователь просит",
+            "Пользователь спрашивает",
+            "Пользователь хочет",
+            "Пользователь задаёт",
+            "Пользователь задает",
+            "The user asks",
+            "The user wants",
+            "The user is asking",
+            "The user requests",
+            "Let me ",
+            "I need to ",
+            "Нужно ",
+            "Мне нужно ",
+        ];
+
+        bool startsWithReasoning = false;
+        foreach (string starter in reasoningStarters)
+        {
+            if (trimmed.StartsWith(starter, StringComparison.OrdinalIgnoreCase))
+            {
+                startsWithReasoning = true;
+                break;
+            }
+        }
+
+        if (!startsWithReasoning) return text;
+
+        // Look for the boundary between reasoning and actual answer.
+        // Common boundaries: code block (```), heading (#), or double newline
+        // followed by content that doesn't look like more reasoning.
+        string[] boundaries = ["\n```", "\n#", "\n\n**", "\n\n---"];
+        int bestBoundary = -1;
+        foreach (string boundary in boundaries)
+        {
+            int idx = text.IndexOf(boundary, StringComparison.Ordinal);
+            if (idx >= 0 && (bestBoundary < 0 || idx < bestBoundary))
+            {
+                bestBoundary = idx;
+            }
+        }
+
+        if (bestBoundary >= 0)
+        {
+            string afterBoundary = text.Substring(bestBoundary).TrimStart('\n', '\r');
+            if (!string.IsNullOrWhiteSpace(afterBoundary))
+            {
+                return afterBoundary;
+            }
+        }
+
+        // Fallback: look for double newline boundary where the second part
+        // is substantially longer or starts differently
+        int doubleNewline = text.IndexOf("\n\n", StringComparison.Ordinal);
+        if (doubleNewline >= 0 && doubleNewline < text.Length / 2)
+        {
+            string afterNewline = text.Substring(doubleNewline + 2).TrimStart();
+            // Only strip if the remaining text is substantial
+            if (afterNewline.Length > 20)
+            {
+                return afterNewline;
+            }
+        }
+
+        return text;
     }
 
     private static string StripTag(string text, string openTag, string closeTag)
