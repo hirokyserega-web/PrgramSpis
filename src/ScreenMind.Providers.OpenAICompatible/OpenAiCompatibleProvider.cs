@@ -1,13 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using ScreenMind.AI;
 using ScreenMind.Core.Ai;
 using ScreenMind.Core.Imaging;
@@ -26,17 +26,20 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
     private readonly ProviderConfigurationResolver configurationResolver;
     private readonly ISecretStore secretStore;
     private readonly Qwen.IQwenProxyClient qwenProxyClient;
+    private readonly ILogger<OpenAiCompatibleProvider>? logger;
 
     public OpenAiCompatibleProvider(
         HttpClient httpClient,
         ProviderConfigurationResolver configurationResolver,
         ISecretStore secretStore,
-        Qwen.IQwenProxyClient? qwenProxyClient = null)
+        Qwen.IQwenProxyClient? qwenProxyClient = null,
+        ILogger<OpenAiCompatibleProvider>? logger = null)
     {
         this.httpClient = httpClient;
         this.configurationResolver = configurationResolver;
         this.secretStore = secretStore;
         this.qwenProxyClient = qwenProxyClient ?? new Qwen.QwenProxyClient(httpClient);
+        this.logger = logger;
     }
 
     public string Id => "openai-compatible";
@@ -62,27 +65,6 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
         bool isQwenProxy = await IsQwenProxyAsync(configuration.BaseUri, cancellationToken).ConfigureAwait(false);
 
         string effectiveModelId = configuration.ModelId;
-        Exception? resolveException = null;
-        if (isQwenProxy && HasRealImage(request))
-        {
-            try
-            {
-                effectiveModelId = await ResolveQwenModelIdAsync(configuration.BaseUri, configuration.ModelId, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                resolveException = exception;
-            }
-        }
-
-        if (resolveException is not null)
-        {
-            yield return new AiStreamEvent.Failed(
-                new AiError(AiErrorKind.UnsupportedModel, resolveException.Message),
-                DateTimeOffset.UtcNow);
-            yield break;
-        }
-
         using HttpRequestMessage httpRequest = new(HttpMethod.Post, new Uri(configuration.BaseUri, "v1/chat/completions"));
         if (!string.IsNullOrWhiteSpace(configuration.ApiKey))
         {
@@ -122,6 +104,12 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
             JsonSerializer.Serialize(BuildBody(request, effectiveModelId, uploadedFile, isQwenProxy)),
             Encoding.UTF8,
             "application/json");
+
+        logger?.LogInformation(
+            "Selected model: {SelectedModel}; Effective model: {EffectiveModel}; Image transport: {ImageTransport}",
+            configuration.ModelId,
+            effectiveModelId,
+            uploadedFile is not null ? "Qwen uploaded file" : "Inline image or text");
 
         HttpResponseMessage? response = null;
         AiError? startupFailure = null;
@@ -367,12 +355,11 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
         object? uploadedFile,
         bool isQwenProxy)
     {
-        string effectiveModelId = GetEffectiveModelId(request, modelId);
         object[] messages = BuildMessages(request, uploadedFile, isQwenProxy);
 
         var bodyObj = new Dictionary<string, object>
         {
-            { "model", effectiveModelId },
+            { "model", modelId },
             { "stream", true },
             { "messages", messages }
         };
@@ -417,27 +404,8 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
         return bodyObj;
     }
 
-    private static string GetEffectiveModelId(AiRequest request, string modelId)
-    {
-        if (HasRealImage(request) && IsQwenTextModel(modelId))
-        {
-            return "qwen3-vl-plus";
-        }
-
-        return modelId;
-    }
-
     private static bool HasRealImage(AiRequest request)
         => request.Image is not null && (request.Image.Width != 1 || request.Image.Height != 1);
-
-    private static bool IsQwenTextModel(string modelId)
-    {
-        return modelId.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)
-            && !modelId.Contains("-vl", StringComparison.OrdinalIgnoreCase)
-            && !modelId.Contains("vision", StringComparison.OrdinalIgnoreCase)
-            && !modelId.Contains("omni", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(modelId, "qwen3.7-plus", StringComparison.OrdinalIgnoreCase);
-    }
 
     private static bool IsDeepseekModel(string modelId)
         => modelId.StartsWith("deepseek", StringComparison.OrdinalIgnoreCase);
@@ -458,32 +426,6 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
         {
             return false;
         }
-    }
-
-    private async Task<string> ResolveQwenModelIdAsync(Uri baseUri, string selectedModelId, CancellationToken cancellationToken)
-    {
-        // Models that natively support vision/image input — do NOT redirect.
-        if (selectedModelId.Contains("vl", StringComparison.OrdinalIgnoreCase) || 
-            selectedModelId.Contains("vision", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(selectedModelId, "qwen3.7-plus", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(selectedModelId, "qwen3.8-max-preview", StringComparison.OrdinalIgnoreCase))
-        {
-            return selectedModelId;
-        }
-
-        var models = await qwenProxyClient.GetModelsAsync(baseUri, cancellationToken).ConfigureAwait(false);
-        if (models.Count == 0)
-        {
-            return "qwen3-vl-plus";
-        }
-
-        string? visionModel = models.FirstOrDefault(m => m.Contains("vl", StringComparison.OrdinalIgnoreCase) || m.Contains("vision", StringComparison.OrdinalIgnoreCase));
-        if (visionModel is not null)
-        {
-            return visionModel;
-        }
-
-        throw new QwenProxyException("No vision-capable model is available on the Qwen proxy.");
     }
 
     private static async Task<AiError> CreateHttpErrorAsync(

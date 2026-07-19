@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using ScreenMind.AI;
 using ScreenMind.Core.Ai;
@@ -100,54 +101,42 @@ public sealed class ProviderContractTests
     }
 
     [Fact]
-    public async Task OpenAiCompatibleShouldUseQwenVisionModelForImageRequests()
-    {
-        QueueHttpMessageHandler handler = new(SseResponse("data: [DONE]\n\n"));
-        OpenAiCompatibleProvider provider = new(
-            CreateClient(handler),
-            CreateResolver("openai-compatible", "http://localhost:3264/api", "compatible-key", "secret", "qwen3.7-max"),
-            new FakeSecretStore(null, null),
-            new FakeQwenProxyClient { IsQwen = false });
-
-        await CollectAsync(provider.StreamAsync(CreateRequest("openai-compatible", "qwen3.7-max"), CancellationToken.None));
-
-        handler.Requests.Single().Uri.Should().Be("http://localhost:3264/api/v1/chat/completions");
-        handler.Requests.Single().Body.Should().Contain("\"model\":\"qwen3-vl-plus\"");
-        handler.Requests.Single().Body.Should().Contain("\"image_url\"");
-    }
-
-    [Fact]
-    public async Task OpenAiCompatibleShouldUseQwenVisionModelForQwen38MaxPreviewImageRequests()
+    public async Task Qwen38MaxPreviewImageRequestMustNotSwitchModel()
     {
         QueueHttpMessageHandler handler = new(SseResponse("data: [DONE]\n\n"));
         OpenAiCompatibleProvider provider = new(
             CreateClient(handler),
             CreateResolver("openai-compatible", "http://localhost:3264/api", "compatible-key", "secret", "qwen3.8-max-preview"),
-            new FakeSecretStore(null, null),
-            new FakeQwenProxyClient { IsQwen = false });
+            new FakeSecretStore("qwen-cookie", "cookie"),
+            new FakeQwenProxyClient { IsQwen = true, Models = new List<string> { "qwen3-vl-plus" } });
 
-        await CollectAsync(provider.StreamAsync(CreateRequest("openai-compatible", "qwen3.8-max-preview"), CancellationToken.None));
+        AiRequest request = CreateRequest("openai-compatible", "qwen3.8-max-preview");
+        await CollectAsync(provider.StreamAsync(request, CancellationToken.None));
 
-        handler.Requests.Single().Uri.Should().Be("http://localhost:3264/api/v1/chat/completions");
-        handler.Requests.Single().Body.Should().Contain("\"model\":\"qwen3-vl-plus\"");
-        handler.Requests.Single().Body.Should().Contain("\"image_url\"");
+        RecordedRequest sentRequest = handler.Requests.Single();
+        using JsonDocument body = JsonDocument.Parse(sentRequest.Body!);
+        JsonElement root = body.RootElement;
+        root.GetProperty("model").GetString().Should().Be("qwen3.8-max-preview");
+        sentRequest.Body.Should().NotContain("qwen3-vl-plus");
+        root.GetProperty("messages").EnumerateArray().Last().GetProperty("files").GetArrayLength().Should().Be(1);
     }
 
     [Fact]
-    public async Task OpenAiCompatibleShouldUseOriginalModelForQwen37PlusImageRequests()
+    public async Task Qwen38MaxPreviewTextRequestMustNotSwitchModel()
     {
         QueueHttpMessageHandler handler = new(SseResponse("data: [DONE]\n\n"));
         OpenAiCompatibleProvider provider = new(
             CreateClient(handler),
-            CreateResolver("openai-compatible", "http://localhost:3264/api", "compatible-key", "secret", "qwen3.7-plus"),
-            new FakeSecretStore(null, null),
-            new FakeQwenProxyClient { IsQwen = false });
+            CreateResolver("openai-compatible", "http://localhost:3264/api", "compatible-key", "secret", "qwen3.8-max-preview"),
+            new FakeSecretStore("qwen-cookie", "cookie"),
+            new FakeQwenProxyClient { IsQwen = true });
 
-        await CollectAsync(provider.StreamAsync(CreateRequest("openai-compatible", "qwen3.7-plus"), CancellationToken.None));
+        AiRequest request = CreateRequest("openai-compatible", "qwen3.8-max-preview", image: null);
+        await CollectAsync(provider.StreamAsync(request, CancellationToken.None));
 
-        handler.Requests.Single().Uri.Should().Be("http://localhost:3264/api/v1/chat/completions");
-        handler.Requests.Single().Body.Should().Contain("\"model\":\"qwen3.7-plus\"");
-        handler.Requests.Single().Body.Should().Contain("\"image_url\"");
+        using JsonDocument body = JsonDocument.Parse(handler.Requests.Single().Body!);
+        body.RootElement.GetProperty("model").GetString().Should().Be("qwen3.8-max-preview");
+        handler.Requests.Single().Body.Should().NotContain("qwen3-vl-plus");
     }
 
     [Fact]
@@ -374,11 +363,11 @@ public sealed class ProviderContractTests
             new FakeSecretStore(secretName, secret));
     }
 
-    private static AiRequest CreateRequest(string providerId, string modelId = "model")
+    private static AiRequest CreateRequest(string providerId, string modelId = "model", ScreenImage? image = null)
     {
         return new AiRequest(
             new AiProfile("profile", "Profile", providerId, modelId, "system"),
-            new ScreenImage([1, 2, 3], "image/png", ScreenImageFormat.Png, 800, 600, DateTimeOffset.UtcNow),
+            image ?? new ScreenImage([1, 2, 3], "image/png", ScreenImageFormat.Png, 800, 600, DateTimeOffset.UtcNow),
             "question",
             []);
     }
