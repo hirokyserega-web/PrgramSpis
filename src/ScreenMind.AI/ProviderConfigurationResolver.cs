@@ -11,6 +11,7 @@ public sealed class ProviderConfigurationResolver
     private const int DefaultDeepseekProxyPort = 9655;
     private const int LegacyGlmKimiProxyPort = 3265;
     private const int DefaultGlmKimiProxyPort = 9766;
+    private const int DefaultNotionProxyPort = 8088;
 
     private readonly ISettingsStore settingsStore;
     private readonly ISecretStore? secretStore;
@@ -52,6 +53,7 @@ public sealed class ProviderConfigurationResolver
             managedProxies.Qwen ??= new ManagedProxyItem { Port = DefaultQwenProxyPort };
             managedProxies.Deepseek ??= new ManagedProxyItem { Port = DefaultDeepseekProxyPort };
             managedProxies.GlmKimi ??= new ManagedProxyItem { Port = LegacyGlmKimiProxyPort };
+            managedProxies.Notion ??= new ManagedProxyItem { Port = DefaultNotionProxyPort };
             NormalizeManagedProxyPorts(managedProxies);
             bool isManagedProxyUri = IsKnownManagedProxyUri(baseUri, managedProxies);
             bool isUnconfiguredCompatibleUri = UriEquals(baseUri, EnsureDirectoryUri(defaultBaseUri));
@@ -72,6 +74,10 @@ public sealed class ProviderConfigurationResolver
             else if (IsGlmKimi(profile, modelId) && (managedProxies.GlmKimi.Enabled || shouldUseSelectedLocalProxy))
             {
                 baseUri = BuildRootProxyUri(managedProxies.GlmKimi.Port);
+            }
+            else if (IsNotion(profile, modelId) && (managedProxies.Notion.Enabled || shouldUseSelectedLocalProxy))
+            {
+                baseUri = BuildRootProxyUri(managedProxies.Notion.Port);
             }
         }
 
@@ -124,6 +130,7 @@ public sealed class ProviderConfigurationResolver
             managedProxies.Qwen.Port,
             managedProxies.Deepseek.Port,
             managedProxies.GlmKimi.Port,
+            managedProxies.Notion.Port,
         ];
 
         return knownPorts.Contains(uri.Port);
@@ -144,6 +151,11 @@ public sealed class ProviderConfigurationResolver
         if (managedProxies.GlmKimi.Port <= 0)
         {
             managedProxies.GlmKimi.Port = LegacyGlmKimiProxyPort;
+        }
+
+        if (managedProxies.Notion.Port <= 0)
+        {
+            managedProxies.Notion.Port = DefaultNotionProxyPort;
         }
     }
 
@@ -167,6 +179,11 @@ public sealed class ProviderConfigurationResolver
             || profile.Id.StartsWith("glm", StringComparison.OrdinalIgnoreCase)
             || modelId.StartsWith("kimi", StringComparison.OrdinalIgnoreCase)
             || modelId.StartsWith("glm", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsNotion(AiProfile profile, string modelId)
+    {
+        return profile.Id.StartsWith("notion", StringComparison.OrdinalIgnoreCase);
     }
 
     private static Uri BuildQwenProxyUri(int port)

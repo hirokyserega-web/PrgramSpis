@@ -30,6 +30,7 @@ public static class SettingsSchemaMigrator
         normalized.ManagedProxies.Qwen ??= new ManagedProxyItem { Port = 3264 };
         normalized.ManagedProxies.Deepseek ??= new ManagedProxyItem { Port = 9655 };
         normalized.ManagedProxies.GlmKimi ??= new ManagedProxyItem { Port = 3265 };
+        normalized.ManagedProxies.Notion ??= new ManagedProxyItem { Port = 8088 };
         normalized.Profiles.Items ??= [];
 
         normalized.Ui.OverlayOpacity = ClampFinite(
@@ -56,6 +57,11 @@ public static class SettingsSchemaMigrator
         if (normalized.ManagedProxies.GlmKimi.Port <= 0)
         {
             normalized.ManagedProxies.GlmKimi.Port = 3265;
+        }
+
+        if (normalized.ManagedProxies.Notion.Port <= 0)
+        {
+            normalized.ManagedProxies.Notion.Port = 8088;
         }
 
         MergeDefaultProviderSettings(normalized.Providers);

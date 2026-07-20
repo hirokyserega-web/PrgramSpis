@@ -87,6 +87,16 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         }
     }
 
+    private static string GetProxyRepositoryUrl(string proxyName)
+    {
+        if (proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase))
+        {
+            return "https://github.com/lza6/notion-2api.git";
+        }
+
+        return $"https://github.com/ForgetMeAI/{proxyName}.git";
+    }
+
     public Task<bool> IsInstalledAsync(string proxyName, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -109,7 +119,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             ProcessStartInfo gitPsi = new()
             {
                 FileName = "git",
-                Arguments = $"clone https://github.com/ForgetMeAI/{proxyName}.git",
+                Arguments = $"clone {GetProxyRepositoryUrl(proxyName)}",
                 WorkingDirectory = parentDir,
                 CreateNoWindow = true,
                 UseShellExecute = false
@@ -127,6 +137,16 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             {
                 throw new InvalidOperationException("Failed to start git process. Ensure git is installed.");
             }
+        }
+
+        if (proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase))
+        {
+            await InstallNotionProxyAsync(dir, cancellationToken).ConfigureAwait(false);
+            if (!IsInstalledDirectory(dir))
+            {
+                throw new InvalidOperationException($"Proxy {proxyName} was installed, but its Python environment was not found.");
+            }
+            return;
         }
 
         // Run npm install
@@ -228,7 +248,16 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         }
     }
 
-    public async Task StartAsync(string proxyName, int port, string cookie, CancellationToken cancellationToken)
+    public Task StartAsync(string proxyName, int port, string cookie, CancellationToken cancellationToken)
+    {
+        return StartAsync(proxyName, port, new ExternalProxyCredentials(cookie), cancellationToken);
+    }
+
+    public async Task StartAsync(
+        string proxyName,
+        int port,
+        ExternalProxyCredentials credentials,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (port <= 0)
@@ -282,10 +311,10 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         {
             string envPath = Path.Combine(dir, ".env");
             List<string> envLines = [$"PORT={port}"];
-            if (!string.IsNullOrWhiteSpace(cookie))
+            if (!string.IsNullOrWhiteSpace(credentials.Cookie))
             {
-                envLines.Add($"COOKIE={cookie}");
-                envLines.Add($"SESSION_TOKEN={cookie}");
+                envLines.Add($"COOKIE={credentials.Cookie}");
+                envLines.Add($"SESSION_TOKEN={credentials.Cookie}");
             }
 
             File.WriteAllLines(envPath, envLines);
@@ -295,18 +324,41 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             // Ignore write failures
         }
 
-        string nodeExecutable = ResolveNodeExecutable();
-        string entryPoint = GetNodeEntryPoint(dir);
-        ProcessStartInfo psi = new()
+        ProcessStartInfo psi;
+        if (proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase))
         {
-            FileName = nodeExecutable,
-            Arguments = $"\"{entryPoint}\"",
-            WorkingDirectory = dir,
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
+            string pythonPath = Path.Combine(dir, ".venv", "Scripts", "python.exe");
+            if (!File.Exists(pythonPath))
+            {
+                throw new InvalidOperationException("Notion proxy Python environment is not installed. Click Install first.");
+            }
+
+            psi = new ProcessStartInfo
+            {
+                FileName = pythonPath,
+                Arguments = $"-m uvicorn main:app --host 127.0.0.1 --port {port}",
+                WorkingDirectory = dir,
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+        }
+        else
+        {
+            string nodeExecutable = ResolveNodeExecutable();
+            string entryPoint = GetNodeEntryPoint(dir);
+            psi = new ProcessStartInfo
+            {
+                FileName = nodeExecutable,
+                Arguments = $"\"{entryPoint}\"",
+                WorkingDirectory = dir,
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+        }
 
         psi.EnvironmentVariables["PORT"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
         psi.EnvironmentVariables["NON_INTERACTIVE"] = "1";
@@ -324,6 +376,18 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         {
             psi.EnvironmentVariables["DEFAULT_MODEL"] = "qwen3.8-max-preview";
         }
+        else if (proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase))
+        {
+            SetEnvironmentVariableIfPresent(psi, "API_MASTER_KEY", credentials.ApiMasterKey);
+            SetEnvironmentVariableIfPresent(psi, "NOTION_COOKIE", credentials.Cookie);
+            SetEnvironmentVariableIfPresent(psi, "NOTION_SPACE_ID", credentials.SpaceId);
+            SetEnvironmentVariableIfPresent(psi, "NOTION_USER_ID", credentials.UserId);
+            SetEnvironmentVariableIfPresent(psi, "NOTION_USER_NAME", credentials.UserName);
+            SetEnvironmentVariableIfPresent(psi, "NOTION_USER_EMAIL", credentials.UserEmail);
+            SetEnvironmentVariableIfPresent(psi, "NOTION_BLOCK_ID", credentials.BlockId);
+            psi.EnvironmentVariables["NGINX_PORT"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
 
         // Clear diagnostic log for this proxy
         var logs = proxyLogs.GetOrAdd(proxyName, _ => new ConcurrentQueue<string>());
@@ -413,6 +477,14 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         }
     }
 
+    private static void SetEnvironmentVariableIfPresent(ProcessStartInfo processStartInfo, string name, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            processStartInfo.EnvironmentVariables[name] = value;
+        }
+    }
+
     private void AddDiagnosticLine(string proxyName, string line)
     {
         string sanitized = SanitizeDiagnosticLine(line);
@@ -467,8 +539,9 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         client.Timeout = TimeSpan.FromSeconds(5);
         try
         {
-            string url = proxyName.Equals("FreeQwenApi", StringComparison.OrdinalIgnoreCase)
-                ? $"http://localhost:{port}/api/health"
+            bool isNotion = proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase);
+            string url = isNotion
+                ? $"http://localhost:{port}/"
                 : $"http://localhost:{port}/api/health";
 
             HttpResponseMessage response;
@@ -505,6 +578,14 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
                 if (root.TryGetProperty("ok", out JsonElement okProp) && okProp.GetBoolean())
                 {
                     return true;
+                }
+
+                if (proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase)
+                    && root.TryGetProperty("message", out JsonElement messageProp)
+                    && messageProp.ValueKind == JsonValueKind.String)
+                {
+                    return messageProp.GetString()?.Contains("运行正常", StringComparison.OrdinalIgnoreCase) == true
+                        || messageProp.GetString()?.Contains("running", StringComparison.OrdinalIgnoreCase) == true;
                 }
             }
         }
@@ -749,7 +830,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             return;
         }
 
-        string helper = string.Join(nl, new[]
+        string helper = string.Join(nl, new string[]
         {
             "function emitQwenDelta(delta, onChunk) {",
             "    if (typeof onChunk !== 'function' || !delta) return;",
@@ -765,7 +846,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         });
         chat = chat.Insert(parserIndex, helper);
 
-        string oldNode = string.Join(nl, new[]
+        string oldNode = string.Join(nl, new string[]
         {
             "                        if (delta && delta.content) {",
             "                            fullContent += delta.content;",
@@ -776,7 +857,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             "                        }",
             ""
         });
-        string newNode = string.Join(nl, new[]
+        string newNode = string.Join(nl, new string[]
         {
             "                        if (delta) {",
             "                            if (typeof delta.content === 'string' && delta.content.length > 0) {",
@@ -808,7 +889,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         chat = chat.Replace(oldNode, newNode, StringComparison.Ordinal);
         chat = chat.Replace("message: { role: 'assistant', content: fullContent }," + nl, "message: { role: 'assistant', content: fullContent, ...(fullReasoning ? { reasoning_content: fullReasoning } : {}) }," + nl, StringComparison.Ordinal);
 
-        string routesHelper = string.Join(nl, new[]
+        string routesHelper = string.Join(nl, new string[]
         {
             "function writeQwenDeltaSse(res, mappedModel, chunk, kind) {",
             "    const delta = kind === 'reasoning' ? { reasoning_content: chunk } : { content: chunk };",
@@ -824,14 +905,14 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             return;
         }
         routes = routes.Insert(routeIndex, routesHelper);
-        string oldCallback = string.Join(nl, new[]
+        string oldCallback = string.Join(nl, new string[]
         {
             "streamingCallback = (chunk) => {",
             "                        hasStreamedChunks = true;",
             "                        writeSse({",
             ""
         });
-        string newCallback = string.Join(nl, new[]
+        string newCallback = string.Join(nl, new string[]
         {
             "streamingCallback = (chunk, kind = 'content') => {",
             "                        hasStreamedChunks = true;",
@@ -843,14 +924,14 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             ""
         });
         routes = routes.Replace(oldCallback, newCallback, StringComparison.Ordinal);
-        string oldCallback2 = string.Join(nl, new[]
+        string oldCallback2 = string.Join(nl, new string[]
         {
             "streamingCallback = (chunk) => {",
             "                        hasStreamedChunks = true;",
             "                        // OpenWebUI не нуждается в role в чанках - только контент",
             ""
         });
-        string newCallback2 = string.Join(nl, new[]
+        string newCallback2 = string.Join(nl, new string[]
         {
             "streamingCallback = (chunk, kind = 'content') => {",
             "                        hasStreamedChunks = true;",
@@ -877,6 +958,12 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
 
     private static bool IsInstalledDirectory(string dir)
     {
+        if (File.Exists(Path.Combine(dir, "main.py"))
+            && File.Exists(Path.Combine(dir, "requirements.txt")))
+        {
+            return File.Exists(Path.Combine(dir, ".venv", "Scripts", "python.exe"));
+        }
+
         string packagePath = Path.Combine(dir, PackageJsonFileName);
         if (!File.Exists(packagePath))
         {
@@ -885,6 +972,63 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
 
         return !PackageHasDependencies(packagePath)
             || Directory.Exists(Path.Combine(dir, "node_modules"));
+    }
+
+    private static async Task InstallNotionProxyAsync(string dir, CancellationToken cancellationToken)
+    {
+        string pythonExecutable = ResolvePythonExecutable();
+        if (string.IsNullOrWhiteSpace(pythonExecutable))
+        {
+            throw new InvalidOperationException("Python is required to install notion-2api.");
+        }
+
+        string venvPath = Path.Combine(dir, ".venv");
+        if (!Directory.Exists(venvPath))
+        {
+            ProcessStartInfo venvPsi = new()
+            {
+                FileName = pythonExecutable,
+                Arguments = $"-m venv .venv",
+                WorkingDirectory = dir,
+                CreateNoWindow = true,
+                UseShellExecute = false
+            };
+            using Process? venvProcess = Process.Start(venvPsi);
+            if (venvProcess is not null)
+            {
+                await venvProcess.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+                if (venvProcess.ExitCode != 0)
+                {
+                    throw new InvalidOperationException($"Failed to create virtual environment. Exit code: {venvProcess.ExitCode}");
+                }
+            }
+            else
+            {
+                throw new InvalidOperationException("Failed to start python process. Ensure python is installed.");
+            }
+        }
+
+        ProcessStartInfo installPsi = new()
+        {
+            FileName = Path.Combine(venvPath, "Scripts", "python.exe"),
+            Arguments = "-m pip install -r requirements.txt",
+            WorkingDirectory = dir,
+            CreateNoWindow = true,
+            UseShellExecute = false
+        };
+        using Process? installProcess = Process.Start(installPsi);
+        if (installProcess is not null)
+        {
+            await installProcess.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            if (installProcess.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"Failed to install requirements. Exit code: {installProcess.ExitCode}");
+            }
+        }
+        else
+        {
+            throw new InvalidOperationException("Failed to start python process. Ensure python is installed.");
+        }
     }
 
     private static bool PackageHasDependencies(string packagePath)
@@ -934,6 +1078,44 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         }
 
         return "node";
+    }
+
+    private static string ResolvePythonExecutable()
+    {
+        string? path = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            foreach (string entry in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                string[] candidates = ["python.exe", "python3.exe", "python"];
+                foreach (string candidate in candidates)
+                {
+                    string fullCandidate = Path.Combine(entry, candidate);
+                    if (File.Exists(fullCandidate))
+                    {
+                        return fullCandidate;
+                    }
+                }
+            }
+        }
+
+        string[] commonPaths =
+        [
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Python", "python.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Python3", "python.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Python", "python.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Python3", "python.exe"),
+        ];
+
+        foreach (string candidate in commonPaths)
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return "python";
     }
 
     private static string GetNodeEntryPoint(string dir)
@@ -995,6 +1177,11 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         if (proxyName.Equals("FreeGLMKimiAPI", StringComparison.OrdinalIgnoreCase))
         {
             return 9766;
+        }
+
+        if (proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase))
+        {
+            return 8088;
         }
 
         return null;

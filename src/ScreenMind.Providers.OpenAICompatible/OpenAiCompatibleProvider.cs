@@ -64,11 +64,15 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
         }
 
         bool isManagedQwen = IsManagedQwenProfile(request.Profile, configuration);
+        bool isManagedNotion = IsManagedNotionProfile(request.Profile, configuration);
+        string? notionApiMasterKey = isManagedNotion
+            ? await secretStore.GetAsync("managed-notion-api-master-key", cancellationToken).ConfigureAwait(false)
+            : null;
         string? qwenCookie = await secretStore.GetAsync("qwen-cookie", cancellationToken).ConfigureAwait(false);
         bool isQwenProxy = isManagedQwen;
         string effectiveModelId = configuration.ModelId;
         using HttpRequestMessage httpRequest = new(HttpMethod.Post, new Uri(configuration.BaseUri, "v1/chat/completions"));
-        AddBearer(httpRequest, configuration.ApiKey);
+        AddBearer(httpRequest, isManagedNotion ? notionApiMasterKey : configuration.ApiKey);
 
         if (isQwenProxy && !string.IsNullOrWhiteSpace(qwenCookie))
         {
@@ -100,7 +104,7 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
 
         httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         httpRequest.Content = new StringContent(
-            JsonSerializer.Serialize(BuildBody(request, effectiveModelId, uploadedFile, isQwenProxy)),
+            JsonSerializer.Serialize(BuildBody(request, effectiveModelId, uploadedFile, isQwenProxy, isManagedNotion)),
             Encoding.UTF8,
             "application/json");
 
@@ -393,7 +397,8 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
         AiRequest request,
         string modelId,
         QwenChatAttachment? uploadedFile,
-        bool isQwenProxy)
+        bool isQwenProxy,
+        bool isManagedNotion)
     {
         object[] messages = BuildMessages(request, uploadedFile, isQwenProxy);
 
@@ -404,7 +409,7 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
             { "messages", messages }
         };
 
-        if (isQwenProxy)
+        if (isQwenProxy || isManagedNotion)
         {
             if (request.Conversation is not null)
             {
@@ -500,6 +505,12 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
 
     private static bool IsDeepseekModel(string modelId)
         => modelId.StartsWith("deepseek", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsManagedNotionProfile(AiProfile profile, ProviderRuntimeConfiguration configuration)
+        => profile.ProviderId.Equals("openai-compatible", StringComparison.OrdinalIgnoreCase)
+            && profile.Id.StartsWith("notion", StringComparison.OrdinalIgnoreCase)
+            && configuration.BaseUri.IsLoopback
+            && configuration.BaseUri.AbsolutePath.Trim('/').Length == 0;
 
     private static bool IsManagedQwenProfile(AiProfile profile, ProviderRuntimeConfiguration configuration)
         => profile.ProviderId.Equals("openai-compatible", StringComparison.OrdinalIgnoreCase)

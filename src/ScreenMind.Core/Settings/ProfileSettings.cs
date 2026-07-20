@@ -27,6 +27,7 @@ public sealed class ProfileSettings
                 new("qwen-vl", "Qwen Vision (FreeQwenApi)", "openai-compatible", "qwen3.8-max-preview", "Analyze the image and describe what you see in detail."),
                 new("deepseek-free", "Deepseek Free (FreeDeepseekAPI)", "openai-compatible", "deepseek-reasoner", "Analyze the screenshot and solve step-by-step."),
                 new("kimi-free", "Kimi Free (FreeGLMKimiAPI)", "openai-compatible", "kimi", "Analyze the screenshot and translate or summarize clearly."),
+                new("notion-free", "Notion AI (notion-2api)", "openai-compatible", "claude-sonnet-4.5", "Analyze the screenshot and answer clearly."),
             ],
         };
     }

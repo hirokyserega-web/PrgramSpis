@@ -15,6 +15,12 @@ public interface IExternalProxyManager
 
     Task StartAsync(string proxyName, int port, string cookie, CancellationToken cancellationToken);
 
+    Task StartAsync(
+        string proxyName,
+        int port,
+        ExternalProxyCredentials credentials,
+        CancellationToken cancellationToken);
+
     Task StopAsync(string proxyName, CancellationToken cancellationToken);
 
     Task FixQwenProxyModelsAsync(CancellationToken cancellationToken);

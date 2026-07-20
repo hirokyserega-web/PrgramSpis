@@ -118,6 +118,20 @@ public sealed class ChatWindow : Window, IDisposable
     private readonly Button kimiStartBtn;
     private readonly Button kimiStopBtn;
 
+    private readonly CheckBox notionProxyCheck;
+    private readonly TextBox notionProxyPortInput;
+    private readonly TextBox notionCookieInput;
+    private readonly TextBox notionSpaceIdInput;
+    private readonly TextBox notionUserIdInput;
+    private readonly TextBox notionUserNameInput;
+    private readonly TextBox notionUserEmailInput;
+    private readonly TextBox notionBlockIdInput;
+    private readonly TextBox notionApiMasterKeyInput;
+    private readonly Button notionInstallBtn;
+    private readonly TextBlock notionStatusText;
+    private readonly Button notionStartBtn;
+    private readonly Button notionStopBtn;
+
     // Mutable surface brushes — alpha follows Overlay Opacity so the whole window is
     // truly see-through (Window.Opacity would also fade text; we keep text at full opacity).
     private readonly SolidColorBrush WindowBg = new(Color.FromArgb(200, 9, 13, 20));
@@ -1008,6 +1022,40 @@ public sealed class ChatWindow : Window, IDisposable
         kimiStatusGrid.Children.Add(kimiStartBtn); Grid.SetColumn(kimiStartBtn, 1);
         kimiStatusGrid.Children.Add(kimiStopBtn); Grid.SetColumn(kimiStopBtn, 2);
         scrollPanel.Children.Add(kimiStatusGrid);
+
+        scrollPanel.Children.Add(new TextBlock { Text = "notion-2api (Notion AI)", Foreground = Brushes.White, FontWeight = FontWeight.Bold, FontSize = 12 });
+        notionProxyCheck = new CheckBox { Content = "Enable Notion AI Background Proxy", Foreground = Brushes.White };
+        scrollPanel.Children.Add(notionProxyCheck);
+        notionProxyPortInput = new TextBox { Watermark = "Port: 8088", Margin = new Thickness(0, 2, 0, 4) };
+        notionCookieInput = new TextBox { PasswordChar = '*', Watermark = "token_v2 or full Cookie", Margin = new Thickness(0, 2, 0, 4) };
+        notionSpaceIdInput = new TextBox { Watermark = "Notion Space ID", Margin = new Thickness(0, 2, 0, 4) };
+        notionUserIdInput = new TextBox { Watermark = "Notion User ID", Margin = new Thickness(0, 2, 0, 4) };
+        notionUserNameInput = new TextBox { Watermark = "Notion User Name (optional)", Margin = new Thickness(0, 2, 0, 4) };
+        notionUserEmailInput = new TextBox { Watermark = "Notion User Email (optional)", Margin = new Thickness(0, 2, 0, 4) };
+        notionBlockIdInput = new TextBox { Watermark = "Block ID (optional)", Margin = new Thickness(0, 2, 0, 4) };
+        notionApiMasterKeyInput = new TextBox { PasswordChar = '*', Watermark = "API Master Key (optional)", Margin = new Thickness(0, 2, 0, 4) };
+        scrollPanel.Children.Add(notionProxyPortInput);
+        scrollPanel.Children.Add(notionCookieInput);
+        scrollPanel.Children.Add(notionSpaceIdInput);
+        scrollPanel.Children.Add(notionUserIdInput);
+        scrollPanel.Children.Add(notionUserNameInput);
+        scrollPanel.Children.Add(notionUserEmailInput);
+        scrollPanel.Children.Add(notionBlockIdInput);
+        scrollPanel.Children.Add(notionApiMasterKeyInput);
+        Grid notionStatusGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto"), Margin = new Thickness(0, 2, 0, 12) };
+        notionStatusText = new TextBlock { Foreground = TextMutedBrush(), FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
+        notionInstallBtn = CreateButton("Install", BtnBgNormal(), Brushes.White);
+        notionInstallBtn.Click += async (s, e) => await viewModel.InstallProxyAsync("notion-2api");
+        notionStartBtn = CreateButton("Start", greenBrush, Brushes.White);
+        notionStartBtn.Margin = new Thickness(0, 0, 4, 0);
+        notionStartBtn.Click += async (s, e) => { ApplySettingsToViewModel(); await viewModel.StartProxyManualAsync("notion-2api"); };
+        notionStopBtn = CreateButton("Stop", redBrush, Brushes.White);
+        notionStopBtn.Click += async (s, e) => await viewModel.StopProxyManualAsync("notion-2api");
+        notionStatusGrid.Children.Add(notionStatusText); Grid.SetColumn(notionStatusText, 0);
+        notionStatusGrid.Children.Add(notionInstallBtn); Grid.SetColumn(notionInstallBtn, 1);
+        notionStatusGrid.Children.Add(notionStartBtn); Grid.SetColumn(notionStartBtn, 2);
+        notionStatusGrid.Children.Add(notionStopBtn); Grid.SetColumn(notionStopBtn, 3);
+        scrollPanel.Children.Add(notionStatusGrid);
 
         scrollPanel.Children.Add(new Border
         {
@@ -1913,6 +1961,10 @@ public sealed class ChatWindow : Window, IDisposable
             {
                 kimiStatusText.Text = $"Status: {viewModel.KimiStatus}";
             }
+            else if (e.PropertyName == nameof(ChatViewModel.NotionStatus))
+            {
+                notionStatusText.Text = $"Status: {viewModel.NotionStatus}";
+            }
             else if (e.PropertyName == nameof(ChatViewModel.IsQwenInstalled) ||
                      e.PropertyName == nameof(ChatViewModel.IsQwenRunning) ||
                      e.PropertyName == nameof(ChatViewModel.IsQwenInstalling) ||
@@ -1924,7 +1976,11 @@ public sealed class ChatWindow : Window, IDisposable
                      e.PropertyName == nameof(ChatViewModel.IsKimiInstalled) ||
                      e.PropertyName == nameof(ChatViewModel.IsKimiRunning) ||
                      e.PropertyName == nameof(ChatViewModel.IsKimiInstalling) ||
-                     e.PropertyName == nameof(ChatViewModel.IsKimiStarting))
+                     e.PropertyName == nameof(ChatViewModel.IsKimiStarting) ||
+                     e.PropertyName == nameof(ChatViewModel.IsNotionInstalled) ||
+                     e.PropertyName == nameof(ChatViewModel.IsNotionRunning) ||
+                     e.PropertyName == nameof(ChatViewModel.IsNotionInstalling) ||
+                     e.PropertyName == nameof(ChatViewModel.IsNotionStarting))
             {
                 UpdateProxyButtonsState();
             }
@@ -2610,6 +2666,17 @@ public sealed class ChatWindow : Window, IDisposable
             kimiProxyPortInput.Text = viewModel.KimiProxyPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
             kimiProxyCookieInput.Text = viewModel.KimiProxyCookie;
             kimiStatusText.Text = $"Status: {viewModel.KimiStatus}";
+
+            notionProxyCheck.IsChecked = viewModel.NotionProxyEnabled;
+            notionProxyPortInput.Text = viewModel.NotionProxyPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            notionCookieInput.Text = viewModel.NotionCookie;
+            notionSpaceIdInput.Text = viewModel.NotionSpaceId;
+            notionUserIdInput.Text = viewModel.NotionUserId;
+            notionUserNameInput.Text = viewModel.NotionUserName;
+            notionUserEmailInput.Text = viewModel.NotionUserEmail;
+            notionBlockIdInput.Text = viewModel.NotionBlockId;
+            notionApiMasterKeyInput.Text = viewModel.NotionApiMasterKey;
+            notionStatusText.Text = $"Status: {viewModel.NotionStatus}";
         }
         finally
         {
@@ -2676,6 +2743,17 @@ public sealed class ChatWindow : Window, IDisposable
         viewModel.KimiProxyEnabled = kimiProxyCheck.IsChecked ?? false;
         viewModel.KimiProxyCookie = kimiProxyCookieInput.Text ?? string.Empty;
         if (int.TryParse(kimiProxyPortInput.Text, out int kimiPort)) viewModel.KimiProxyPort = kimiPort;
+
+        viewModel.NotionProxyEnabled = notionProxyCheck.IsChecked ?? false;
+        viewModel.NotionCookie = notionCookieInput.Text ?? string.Empty;
+        viewModel.NotionSpaceId = notionSpaceIdInput.Text ?? string.Empty;
+        viewModel.NotionUserId = notionUserIdInput.Text ?? string.Empty;
+        viewModel.NotionUserName = notionUserNameInput.Text ?? string.Empty;
+        viewModel.NotionUserEmail = notionUserEmailInput.Text ?? string.Empty;
+        viewModel.NotionBlockId = notionBlockIdInput.Text ?? string.Empty;
+        viewModel.NotionApiMasterKey = notionApiMasterKeyInput.Text ?? string.Empty;
+        if (int.TryParse(notionProxyPortInput.Text, out int notionPort)) viewModel.NotionProxyPort = notionPort;
+
     }
 
     private static StackPanel CreateSettingsPanel()
@@ -2779,6 +2857,10 @@ public sealed class ChatWindow : Window, IDisposable
         kimiAuthBtn.IsEnabled = viewModel.IsKimiInstalled && !viewModel.IsKimiInstalling && !viewModel.IsKimiRunning && !viewModel.IsKimiStarting;
         kimiStartBtn.IsEnabled = viewModel.IsKimiInstalled && !viewModel.IsKimiRunning && !viewModel.IsKimiInstalling && !viewModel.IsKimiStarting;
         kimiStopBtn.IsEnabled = viewModel.IsKimiRunning && !viewModel.IsKimiInstalling && !viewModel.IsKimiStarting;
+
+        notionInstallBtn.IsEnabled = !viewModel.IsNotionInstalled && !viewModel.IsNotionInstalling;
+        notionStartBtn.IsEnabled = viewModel.IsNotionInstalled && !viewModel.IsNotionRunning && !viewModel.IsNotionInstalling && !viewModel.IsNotionStarting;
+        notionStopBtn.IsEnabled = viewModel.IsNotionRunning && !viewModel.IsNotionInstalling && !viewModel.IsNotionStarting;
     }
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)

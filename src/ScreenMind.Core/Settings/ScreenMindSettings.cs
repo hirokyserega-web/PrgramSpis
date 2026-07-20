@@ -162,5 +162,6 @@ public sealed class ManagedProxiesSettings
     public ManagedProxyItem Qwen { get; set; } = new() { Enabled = false, Port = 3264 };
     public ManagedProxyItem Deepseek { get; set; } = new() { Enabled = false, Port = 9655 };
     public ManagedProxyItem GlmKimi { get; set; } = new() { Enabled = false, Port = 3265 };
+    public ManagedProxyItem Notion { get; set; } = new() { Enabled = false, Port = 8088 };
 }
 

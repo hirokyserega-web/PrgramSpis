@@ -7,6 +7,7 @@ using ScreenMind.Core.Capture;
 using ScreenMind.Core.Hotkeys;
 using ScreenMind.Core.Settings;
 using ScreenMind.Core.Tray;
+using ScreenMind.Core.Ai;
 
 namespace ScreenMind.App;
 
@@ -86,6 +87,18 @@ public sealed class AvaloniaApp : Application
                 {
                     string cookie = await secretStore.GetAsync("managed-kimi-cookie", CancellationToken.None) ?? string.Empty;
                     await proxyManager.StartAsync("FreeGLMKimiAPI", settings.ManagedProxies.GlmKimi.Port, cookie, CancellationToken.None);
+                }
+                if (settings.ManagedProxies.Notion.Enabled)
+                {
+                    ExternalProxyCredentials credentials = new(
+                        await secretStore.GetAsync("managed-notion-cookie", CancellationToken.None) ?? string.Empty,
+                        await secretStore.GetAsync("managed-notion-api-master-key", CancellationToken.None),
+                        await secretStore.GetAsync("managed-notion-space-id", CancellationToken.None),
+                        await secretStore.GetAsync("managed-notion-user-id", CancellationToken.None),
+                        await secretStore.GetAsync("managed-notion-user-name", CancellationToken.None),
+                        await secretStore.GetAsync("managed-notion-user-email", CancellationToken.None),
+                        await secretStore.GetAsync("managed-notion-block-id", CancellationToken.None));
+                    await proxyManager.StartAsync("notion-2api", settings.ManagedProxies.Notion.Port, credentials, CancellationToken.None);
                 }
             }
             catch (Exception ex)

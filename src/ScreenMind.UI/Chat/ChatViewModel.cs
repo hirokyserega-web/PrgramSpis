@@ -190,6 +190,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         "qwen",
         "deepseek",
         "kimi",
+        "notion",
         "openai-compatible"
     };
 
@@ -222,6 +223,36 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private int kimiProxyPort = 3265;
     [ObservableProperty]
     private string kimiProxyCookie = string.Empty;
+
+    [ObservableProperty]
+    private bool notionProxyEnabled;
+    [ObservableProperty]
+    private int notionProxyPort = 8088;
+    [ObservableProperty]
+    private string notionCookie = string.Empty;
+    [ObservableProperty]
+    private string notionSpaceId = string.Empty;
+    [ObservableProperty]
+    private string notionUserId = string.Empty;
+    [ObservableProperty]
+    private string notionUserName = string.Empty;
+    [ObservableProperty]
+    private string notionUserEmail = string.Empty;
+    [ObservableProperty]
+    private string notionBlockId = string.Empty;
+    [ObservableProperty]
+    private string notionApiMasterKey = string.Empty;
+
+    [ObservableProperty]
+    private bool isNotionInstalled;
+    [ObservableProperty]
+    private bool isNotionRunning;
+    [ObservableProperty]
+    private string notionStatus = "Not Installed, Stopped";
+    [ObservableProperty]
+    private bool isNotionInstalling;
+    [ObservableProperty]
+    private bool isNotionStarting;
 
     [ObservableProperty]
     private bool isQwenInstalled;
@@ -370,6 +401,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         string kimiStatus = IsKimiRunning ? "Running" : "Stopped";
         list.Add($"Kimi (Local Proxy) - {kimiStatus}");
 
+        string notionStatus = IsNotionRunning ? "Running" : "Stopped";
+        list.Add($"Notion AI (Local Proxy) - {notionStatus}");
+
         list.Add("Custom OpenAI-Compatible");
 
         AvailableProviders = list;
@@ -427,6 +461,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             case "kimi":
                 models.Add("kimi");
                 break;
+            case "notion":
+                models.Add("claude-sonnet-4.5");
+                models.Add("gpt-5");
+                models.Add("claude-opus-4.1");
+                models.Add("gpt-4.1");
+                models.Add("custom");
+                break;
             case "openai-compatible":
                 models.Add("custom");
                 break;
@@ -457,7 +498,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 }
                 else if (profile.ModelId.StartsWith("deepseek", StringComparison.OrdinalIgnoreCase)) provIdx = 5;
                 else if (profile.ModelId.StartsWith("kimi", StringComparison.OrdinalIgnoreCase) || profile.ModelId.StartsWith("glm", StringComparison.OrdinalIgnoreCase)) provIdx = 6;
-                else provIdx = 7;
+                else if (profile.Id.StartsWith("notion", StringComparison.OrdinalIgnoreCase)) provIdx = 7;
+                else provIdx = 8;
             }
             else
             {
@@ -849,7 +891,16 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         var qwenProxyCookieTask = secretStore.GetAsync("managed-qwen-cookie", CancellationToken.None);
         var deepseekProxyCookieTask = secretStore.GetAsync("managed-deepseek-cookie", CancellationToken.None);
         var kimiProxyCookieTask = secretStore.GetAsync("managed-kimi-cookie", CancellationToken.None);
+        var notionCookieTask = secretStore.GetAsync("managed-notion-cookie", CancellationToken.None);
+        var notionSpaceIdTask = secretStore.GetAsync("managed-notion-space-id", CancellationToken.None);
+        var notionUserIdTask = secretStore.GetAsync("managed-notion-user-id", CancellationToken.None);
+        var notionUserNameTask = secretStore.GetAsync("managed-notion-user-name", CancellationToken.None);
+        var notionUserEmailTask = secretStore.GetAsync("managed-notion-user-email", CancellationToken.None);
+        var notionBlockIdTask = secretStore.GetAsync("managed-notion-block-id", CancellationToken.None);
+        var notionApiMasterKeyTask = secretStore.GetAsync("managed-notion-api-master-key", CancellationToken.None);
 
+        var notionInstalledTask = proxyManager.IsInstalledAsync("notion-2api", CancellationToken.None);
+        var notionRunningTask = proxyManager.IsRunningAsync("notion-2api", CancellationToken.None);
         var qwenInstalledTask = proxyManager.IsInstalledAsync("FreeQwenApi", CancellationToken.None);
         var qwenRunningTask = proxyManager.IsRunningAsync("FreeQwenApi", CancellationToken.None);
         var deepseekInstalledTask = proxyManager.IsInstalledAsync("FreeDeepseekAPI", CancellationToken.None);
@@ -860,7 +911,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         await Task.WhenAll(
             openAiKeyTask, anthropicKeyTask, geminiKeyTask, qwenCookieTask,
             qwenProxyCookieTask, deepseekProxyCookieTask, kimiProxyCookieTask,
-            qwenInstalledTask, qwenRunningTask, deepseekInstalledTask, deepseekRunningTask,
+            notionCookieTask, notionSpaceIdTask, notionUserIdTask, notionUserNameTask, notionUserEmailTask, notionBlockIdTask, notionApiMasterKeyTask,
+            notionInstalledTask, notionRunningTask, qwenInstalledTask, qwenRunningTask, deepseekInstalledTask, deepseekRunningTask,
             kimiInstalledTask, kimiRunningTask
         );
 
@@ -887,6 +939,19 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         KimiProxyEnabled = settings.ManagedProxies.GlmKimi.Enabled;
         KimiProxyPort = settings.ManagedProxies.GlmKimi.Port;
         KimiProxyCookie = await kimiProxyCookieTask ?? string.Empty;
+        NotionCookie = await notionCookieTask ?? string.Empty;
+        NotionSpaceId = await notionSpaceIdTask ?? string.Empty;
+        NotionUserId = await notionUserIdTask ?? string.Empty;
+        NotionUserName = await notionUserNameTask ?? string.Empty;
+        NotionUserEmail = await notionUserEmailTask ?? string.Empty;
+        NotionBlockId = await notionBlockIdTask ?? string.Empty;
+        NotionApiMasterKey = await notionApiMasterKeyTask ?? string.Empty;
+        NotionProxyEnabled = settings.ManagedProxies.Notion.Enabled;
+        NotionProxyPort = settings.ManagedProxies.Notion.Port;
+
+        IsNotionInstalled = await notionInstalledTask;
+        IsNotionRunning = await notionRunningTask;
+        NotionStatus = $"{(IsNotionInstalled ? "Installed" : "Not Installed")}, {(IsNotionRunning ? "Running" : "Stopped")}";
 
         IsQwenInstalled = await qwenInstalledTask;
         IsQwenRunning = await qwenRunningTask;
@@ -960,6 +1025,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             else
             {
                 await proxyManager.StopAsync("FreeGLMKimiAPI", CancellationToken.None);
+            }
+
+            if (NotionProxyEnabled)
+            {
+                await proxyManager.StartAsync("notion-2api", NotionProxyPort, new ExternalProxyCredentials(NotionCookie, NotionApiMasterKey, NotionSpaceId, NotionUserId, NotionUserName, NotionUserEmail, NotionBlockId), CancellationToken.None);
+            }
+            else
+            {
+                await proxyManager.StopAsync("notion-2api", CancellationToken.None);
             }
 
             IsSettingsVisible = false;
@@ -1092,6 +1166,8 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         settings.ManagedProxies.Deepseek.Port = DeepseekProxyPort;
         settings.ManagedProxies.GlmKimi.Enabled = KimiProxyEnabled;
         settings.ManagedProxies.GlmKimi.Port = KimiProxyPort;
+        settings.ManagedProxies.Notion.Enabled = NotionProxyEnabled;
+        settings.ManagedProxies.Notion.Port = NotionProxyPort;
 
         if (!string.IsNullOrWhiteSpace(QwenBaseUrl))
         {
@@ -1114,6 +1190,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         await SaveSecretIfChangedAsync("managed-qwen-cookie", QwenProxyCookie);
         await SaveSecretIfChangedAsync("managed-deepseek-cookie", DeepseekProxyCookie);
         await SaveSecretIfChangedAsync("managed-kimi-cookie", KimiProxyCookie);
+        await SaveSecretIfChangedAsync("managed-notion-cookie", NotionCookie);
+        await SaveSecretIfChangedAsync("managed-notion-space-id", NotionSpaceId);
+        await SaveSecretIfChangedAsync("managed-notion-user-id", NotionUserId);
+        await SaveSecretIfChangedAsync("managed-notion-user-name", NotionUserName);
+        await SaveSecretIfChangedAsync("managed-notion-user-email", NotionUserEmail);
+        await SaveSecretIfChangedAsync("managed-notion-block-id", NotionBlockId);
+        await SaveSecretIfChangedAsync("managed-notion-api-master-key", NotionApiMasterKey);
 
         return settings;
     }
@@ -1192,6 +1275,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (proxyName == "FreeQwenApi") { IsQwenInstalling = true; QwenStatus = "Installing... Please wait (cloning and building)"; }
             else if (proxyName == "FreeDeepseekAPI") { IsDeepseekInstalling = true; DeepseekStatus = "Installing... Please wait (cloning and building)"; }
             else if (proxyName == "FreeGLMKimiAPI") { IsKimiInstalling = true; KimiStatus = "Installing... Please wait (cloning and building)"; }
+            else if (proxyName == "notion-2api") { IsNotionInstalling = true; NotionStatus = "Installing... Please wait (cloning and building)"; }
 
             await proxyManager.InstallAsync(proxyName, CancellationToken.None);
 
@@ -1214,6 +1298,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 IsKimiRunning = await proxyManager.IsRunningAsync("FreeGLMKimiAPI", CancellationToken.None);
                 KimiStatus = $"Installed, {(IsKimiRunning ? "Running" : "Stopped")}";
             }
+            else if (proxyName == "notion-2api")
+            {
+                IsNotionInstalled = true;
+                IsNotionRunning = await proxyManager.IsRunningAsync("notion-2api", CancellationToken.None);
+                NotionStatus = $"Installed, {(IsNotionRunning ? "Running" : "Stopped")}";
+            }
         }
         catch (Exception ex)
         {
@@ -1221,6 +1311,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (proxyName == "FreeQwenApi") QwenStatus = err;
             else if (proxyName == "FreeDeepseekAPI") DeepseekStatus = err;
             else if (proxyName == "FreeGLMKimiAPI") KimiStatus = err;
+            else if (proxyName == "notion-2api") NotionStatus = err;
             ErrorMessage = err;
         }
         finally
@@ -1228,6 +1319,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (proxyName == "FreeQwenApi") IsQwenInstalling = false;
             else if (proxyName == "FreeDeepseekAPI") IsDeepseekInstalling = false;
             else if (proxyName == "FreeGLMKimiAPI") IsKimiInstalling = false;
+            else if (proxyName == "notion-2api") IsNotionInstalling = false;
             UpdateProviderList();
         }
     }
@@ -1280,6 +1372,17 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 KimiStatus = $"Installed, {(IsKimiRunning ? "Running" : "Stopped")}";
                 await SaveSettingsStateAsync();
             }
+            else if (proxyName == "notion-2api")
+            {
+                IsNotionStarting = true;
+                NotionStatus = "Starting...";
+                NotionProxyEnabled = true;
+                ExternalProxyCredentials credentials = new(NotionCookie, NotionApiMasterKey, NotionSpaceId, NotionUserId, NotionUserName, NotionUserEmail, NotionBlockId);
+                await proxyManager.StartAsync("notion-2api", NotionProxyPort, credentials, CancellationToken.None);
+                IsNotionRunning = await proxyManager.IsRunningAsync("notion-2api", CancellationToken.None);
+                NotionStatus = $"Installed, {(IsNotionRunning ? "Running" : "Stopped")}";
+                await SaveSettingsStateAsync();
+            }
         }
         catch (Exception ex)
         {
@@ -1287,6 +1390,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (proxyName == "FreeQwenApi") QwenStatus = err;
             else if (proxyName == "FreeDeepseekAPI") DeepseekStatus = err;
             else if (proxyName == "FreeGLMKimiAPI") KimiStatus = err;
+            else if (proxyName == "notion-2api") NotionStatus = err;
             ErrorMessage = err;
         }
         finally
@@ -1294,6 +1398,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (proxyName == "FreeQwenApi") IsQwenStarting = false;
             else if (proxyName == "FreeDeepseekAPI") IsDeepseekStarting = false;
             else if (proxyName == "FreeGLMKimiAPI") IsKimiStarting = false;
+            else if (proxyName == "notion-2api") IsNotionStarting = false;
             UpdateProviderList();
         }
     }
@@ -1330,6 +1435,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 KimiStatus = $"Installed, {(IsKimiRunning ? "Running" : "Stopped")}";
                 await SaveSettingsStateAsync();
             }
+            else if (proxyName == "notion-2api")
+            {
+                NotionStatus = "Stopping...";
+                NotionProxyEnabled = false;
+                await proxyManager.StopAsync("notion-2api", CancellationToken.None);
+                IsNotionRunning = await proxyManager.IsRunningAsync("notion-2api", CancellationToken.None);
+                NotionStatus = $"Installed, {(IsNotionRunning ? "Running" : "Stopped")}";
+                await SaveSettingsStateAsync();
+            }
         }
         catch (Exception ex)
         {
@@ -1337,6 +1451,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (proxyName == "FreeQwenApi") QwenStatus = err;
             else if (proxyName == "FreeDeepseekAPI") DeepseekStatus = err;
             else if (proxyName == "FreeGLMKimiAPI") KimiStatus = err;
+            else if (proxyName == "notion-2api") NotionStatus = err;
             ErrorMessage = err;
         }
         finally
