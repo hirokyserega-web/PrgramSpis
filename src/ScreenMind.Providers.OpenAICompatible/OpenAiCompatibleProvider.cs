@@ -203,13 +203,29 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
                     if (root.TryGetProperty("choices", out JsonElement choices)
                         && choices.ValueKind == JsonValueKind.Array
                         && choices.GetArrayLength() > 0
-                        && choices[0].TryGetProperty("delta", out JsonElement delta)
-                        && delta.TryGetProperty("content", out JsonElement content))
+                        && choices[0].TryGetProperty("delta", out JsonElement delta))
                     {
-                        string? text = content.GetString();
-                        if (!string.IsNullOrEmpty(text))
+                        foreach (string propertyName in new[] { "reasoning_content", "reasoning", "thinking" })
                         {
-                            yield return new AiStreamEvent.TextDelta(text, DateTimeOffset.UtcNow);
+                            if (delta.TryGetProperty(propertyName, out JsonElement reasoning)
+                                && reasoning.ValueKind == JsonValueKind.String)
+                            {
+                                string? reasoningText = reasoning.GetString();
+                                if (!string.IsNullOrEmpty(reasoningText))
+                                {
+                                    yield return new AiStreamEvent.ReasoningDelta(reasoningText, DateTimeOffset.UtcNow);
+                                }
+                            }
+                        }
+
+                        if (delta.TryGetProperty("content", out JsonElement content)
+                            && content.ValueKind == JsonValueKind.String)
+                        {
+                            string? text = content.GetString();
+                            if (!string.IsNullOrEmpty(text))
+                            {
+                                yield return new AiStreamEvent.TextDelta(text, DateTimeOffset.UtcNow);
+                            }
                         }
                     }
                 }

@@ -79,6 +79,22 @@ public sealed class ProviderContractTests
     }
 
     [Fact]
+    public async Task OpenAiCompatibleShouldEmitReasoningFieldsSeparately()
+    {
+        QueueHttpMessageHandler handler = new(SseResponse(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"internal\",\"content\":\"answer\"}}]}\n\ndata: [DONE]\n\n"));
+        OpenAiCompatibleProvider provider = new(
+            CreateClient(handler),
+            CreateResolver("openai-compatible", "https://compatible.test/", "compatible-key", "secret"),
+            new FakeSecretStore(null, null));
+
+        IReadOnlyList<AiStreamEvent> events = await CollectAsync(provider.StreamAsync(CreateRequest("openai-compatible"), CancellationToken.None));
+
+        events.OfType<AiStreamEvent.ReasoningDelta>().Single().Text.Should().Be("internal");
+        events.OfType<AiStreamEvent.TextDelta>().Single().Text.Should().Be("answer");
+    }
+
+    [Fact]
     public async Task OpenAiCompatibleShouldStreamChatCompletionsDeltas()
     {
         QueueHttpMessageHandler handler = new(SseResponse(

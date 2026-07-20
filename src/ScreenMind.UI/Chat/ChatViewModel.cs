@@ -659,9 +659,15 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 session.Messages.Take(session.Messages.Count - 2).ToArray(),
                 session.ConversationState);
 
-            StringBuilder accumulatedText = new();
+            StreamingAnswerFilter answerFilter = new(
+                suppressUntaggedReasoning: string.Equals(
+                    effectiveProfile.ModelId,
+                    "qwen3.8-max-preview",
+                    StringComparison.OrdinalIgnoreCase));
+            StringBuilder visibleAnswer = new();
             DateTimeOffset lastUiUpdate = DateTimeOffset.MinValue;
             int assistantIndex = session.Messages.Count - 1;
+            bool completed = false;
 
             void PublishAssistantMessage(bool force)
             {
@@ -672,16 +678,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 }
 
                 lastUiUpdate = now;
-                string rawText = accumulatedText.ToString();
-                string cleanedText = StripThinkingBlocks(rawText);
-
+                string text = visibleAnswer.ToString();
                 Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                 {
                     if (assistantIndex >= 0 && assistantIndex < session.Messages.Count)
                     {
                         session.Messages[assistantIndex] = new AiMessage(
                             AiMessageRole.Assistant,
-                            cleanedText,
+                            text,
                             assistantMessage.CreatedAt);
                         OnPropertyChanged(nameof(ActiveMessages));
                     }
@@ -691,15 +695,50 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             await Task.Yield();
             await foreach (AiStreamEvent ev in orchestrator.AnalyzeAsync(request, cts.Token).ConfigureAwait(false))
             {
-                if (ev is AiStreamEvent.TextDelta delta)
+                if (ev is AiStreamEvent.ReasoningDelta)
                 {
-                    accumulatedText.Append(delta.Text);
-                    PublishAssistantMessage(force: false);
+                    continue;
+                }
+                else if (ev is AiStreamEvent.TextDelta delta)
+                {
+                    string visibleDelta = answerFilter.Push(delta.Text);
+                    if (!string.IsNullOrEmpty(visibleDelta))
+                    {
+                        visibleAnswer.Append(visibleDelta);
+                        PublishAssistantMessage(force: false);
+                    }
+                }
+                else if (ev is AiStreamEvent.Completed)
+                {
+                    if (!completed)
+                    {
+                        string remaining = answerFilter.Complete();
+                        completed = true;
+                        if (!string.IsNullOrEmpty(remaining))
+                        {
+                            visibleAnswer.Append(remaining);
+                        }
+                    }
                 }
                 else if (ev is AiStreamEvent.Failed failed)
                 {
                     throw new InvalidOperationException(failed.Error.Message);
                 }
+            }
+
+            if (!completed)
+            {
+                string remaining = answerFilter.Complete();
+                completed = true;
+                if (!string.IsNullOrEmpty(remaining))
+                {
+                    visibleAnswer.Append(remaining);
+                }
+            }
+
+            if (answerFilter.IsReasoningOnly && visibleAnswer.Length == 0)
+            {
+                visibleAnswer.Append("Модель завершила ответ без отдельного итогового текста.");
             }
 
             PublishAssistantMessage(force: true);
@@ -714,12 +753,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
                 ErrorMessage = ex.Message;
-                int index = session.Messages.Count - 1;
-                if (index >= 0 && index < session.Messages.Count)
-                {
-                    session.Messages[index] = new AiMessage(AiMessageRole.Assistant, $"Error: {ex.Message}", assistantMessage.CreatedAt);
-                    OnPropertyChanged(nameof(ActiveMessages));
-                }
+                OnPropertyChanged(nameof(ActiveMessages));
             });
         }
         finally
@@ -732,7 +766,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             {
                 cts.Dispose();
             }
-            catch {}
+            catch { }
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
                 IsSending = false;
@@ -1319,7 +1353,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                     cts.Cancel();
                     cts.Dispose();
                 }
-                catch {}
+                catch { }
             });
         }
         IsSending = false;
@@ -1563,130 +1597,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         CloseRequested?.Invoke(this, EventArgs.Empty);
     }
 
-    public static string StripThinkingBlocks(string text)
-    {
-        if (string.IsNullOrEmpty(text)) return text;
-
-        // Strip <think>...</think>
-        text = StripTag(text, "<think>", "</think>");
-        // Strip <thought>...</thought>
-        text = StripTag(text, "<thought>", "</thought>");
-
-        // Strip raw reasoning blocks ending with "Final" markers
-        string[] markers = ["**Final Answer:**", "Final Answer:", "**Final:**", "Final:"];
-        foreach (string marker in markers)
-        {
-            int markerIndex = text.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-            if (markerIndex >= 0)
-            {
-                text = text.Substring(markerIndex + marker.Length);
-                break;
-            }
-        }
-
-        // Strip inline reasoning from qwen3.8-style responses.
-        // The model often outputs analysis like "Пользователь просит/спрашивает..."
-        // or "The user asks/wants..." before the actual answer.
-        // Detect this pattern and try to extract only the answer.
-        text = StripInlineReasoning(text);
-
-        return text.Trim();
-    }
-
-    private static string StripInlineReasoning(string text)
-    {
-        if (string.IsNullOrEmpty(text) || text.Length < 30) return text;
-
-        // Check if text starts with a reasoning pattern (analysis of the user request)
-        string trimmed = text.TrimStart();
-        string[] reasoningStarters =
-        [
-            "Пользователь просит",
-            "Пользователь спрашивает",
-            "Пользователь хочет",
-            "Пользователь задаёт",
-            "Пользователь задает",
-            "The user asks",
-            "The user wants",
-            "The user is asking",
-            "The user requests",
-            "Let me ",
-            "I need to ",
-            "Нужно ",
-            "Мне нужно ",
-        ];
-
-        bool startsWithReasoning = false;
-        foreach (string starter in reasoningStarters)
-        {
-            if (trimmed.StartsWith(starter, StringComparison.OrdinalIgnoreCase))
-            {
-                startsWithReasoning = true;
-                break;
-            }
-        }
-
-        if (!startsWithReasoning) return text;
-
-        // Look for the boundary between reasoning and actual answer.
-        // Common boundaries: code block (```), heading (#), or double newline
-        // followed by content that doesn't look like more reasoning.
-        string[] boundaries = ["\n```", "\n#", "\n\n**", "\n\n---"];
-        int bestBoundary = -1;
-        foreach (string boundary in boundaries)
-        {
-            int idx = text.IndexOf(boundary, StringComparison.Ordinal);
-            if (idx >= 0 && (bestBoundary < 0 || idx < bestBoundary))
-            {
-                bestBoundary = idx;
-            }
-        }
-
-        if (bestBoundary >= 0)
-        {
-            string afterBoundary = text.Substring(bestBoundary).TrimStart('\n', '\r');
-            if (!string.IsNullOrWhiteSpace(afterBoundary))
-            {
-                return afterBoundary;
-            }
-        }
-
-        // Fallback: look for double newline boundary where the second part
-        // is substantially longer or starts differently
-        int doubleNewline = text.IndexOf("\n\n", StringComparison.Ordinal);
-        if (doubleNewline >= 0 && doubleNewline < text.Length / 2)
-        {
-            string afterNewline = text.Substring(doubleNewline + 2).TrimStart();
-            // Only strip if the remaining text is substantial
-            if (afterNewline.Length > 20)
-            {
-                return afterNewline;
-            }
-        }
-
-        return text;
-    }
-
-    private static string StripTag(string text, string openTag, string closeTag)
-    {
-        int startIndex = text.IndexOf(openTag, StringComparison.OrdinalIgnoreCase);
-        while (startIndex >= 0)
-        {
-            int endIndex = text.IndexOf(closeTag, startIndex, StringComparison.OrdinalIgnoreCase);
-            if (endIndex >= 0)
-            {
-                text = text.Remove(startIndex, endIndex + closeTag.Length - startIndex);
-            }
-            else
-            {
-                text = text.Substring(0, startIndex);
-                break;
-            }
-            startIndex = text.IndexOf(openTag, StringComparison.OrdinalIgnoreCase);
-        }
-        return text;
-    }
-
     partial void OnAlwaysOnTopChanged(bool value)
     {
         System.Threading.Tasks.Task.Run(async () =>
@@ -1697,7 +1607,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 settings.Ui.AlwaysOnTop = value;
                 await settingsStore.SaveAsync(settings, CancellationToken.None);
             }
-            catch {}
+            catch { }
         });
     }
 
