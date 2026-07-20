@@ -977,6 +977,12 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
 
     private static bool IsInstalledDirectory(string dir)
     {
+        string notionManagerBinary = Path.Combine(dir, OperatingSystem.IsWindows() ? "notion-manager.exe" : "notion-manager");
+        if (File.Exists(notionManagerBinary) && new FileInfo(notionManagerBinary).Length > 0)
+        {
+            return true;
+        }
+
         if (File.Exists(Path.Combine(dir, "main.py"))
             && File.Exists(Path.Combine(dir, "requirements.txt")))
         {
