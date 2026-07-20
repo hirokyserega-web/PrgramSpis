@@ -189,7 +189,7 @@ public sealed class ChatWindow : Window, IDisposable
         ExtendClientAreaChromeHints = Avalonia.Platform.ExtendClientAreaChromeHints.NoChrome;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         CanResize = true;
-        ShowInTaskbar = false;
+        ShowInTaskbar = true;
         Width = 960;
         Height = 650;
         MinWidth = 350;
@@ -2786,21 +2786,6 @@ public sealed class ChatWindow : Window, IDisposable
             {
                 sidebarGrid.IsVisible = false;
                 mainGrid.ColumnDefinitions[0] = new ColumnDefinition(0, GridUnitType.Pixel);
-            }
-        }
-        else if (change.Property == WindowStateProperty)
-        {
-            WindowState newState = (WindowState)change.NewValue!;
-            if (newState == WindowState.Minimized)
-            {
-                WindowState = WindowState.Normal;
-                Hide();
-            }
-            else if (newState == WindowState.Normal)
-            {
-                bool desired = viewModel.AlwaysOnTop;
-                Topmost = false;
-                Topmost = desired;
             }
         }
     }

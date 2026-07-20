@@ -402,7 +402,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 models.Add("custom");
                 break;
             case "qwen":
-                models.Add("qwen3.7");
+                models.Add("qwen3.7-plus");
                 models.Add("qwen3.7-max");
                 models.Add("qwen3.8-max-preview");
                 models.Add("qwen3-vl-plus");
@@ -650,11 +650,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         CancellationTokenSource cts = activeCancellationTokenSource;
         try
         {
-            string suffix = "\n\nIMPORTANT: Do NOT output any internal reasoning, thinking, planning, or analysis. Output ONLY the final answer directly. If you must reason internally, wrap ALL thoughts inside <think> and </think> tags. NEVER output plain text thoughts, analysis of the user's request, or planning text outside of these tags. Start your response with the actual answer immediately.";
-            AiProfile effectiveProfile = session.Profile with
-            {
-                SystemPrompt = (session.Profile.SystemPrompt ?? string.Empty) + suffix
-            };
+            AiProfile effectiveProfile = session.Profile;
 
             AiRequest request = new(
                 effectiveProfile,

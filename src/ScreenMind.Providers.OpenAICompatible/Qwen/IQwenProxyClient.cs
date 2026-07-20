@@ -8,7 +8,7 @@ namespace ScreenMind.Providers.OpenAICompatible.Qwen;
 
 public interface IQwenProxyClient
 {
-    Task<QwenProxyCapabilities> GetCapabilitiesAsync(Uri baseUri, CancellationToken cancellationToken);
-    Task<QwenUploadedFile> UploadImageAsync(Uri baseUri, ScreenImage image, string? cookie, CancellationToken cancellationToken);
-    Task<List<string>> GetModelsAsync(Uri baseUri, CancellationToken cancellationToken);
+    Task<QwenProxyCapabilities> GetCapabilitiesAsync(Uri baseUri, string? apiKey, string? cookie, CancellationToken cancellationToken);
+    Task<QwenUploadedFile> UploadImageAsync(Uri baseUri, ScreenImage image, string? apiKey, string? cookie, CancellationToken cancellationToken);
+    Task<List<string>> GetModelsAsync(Uri baseUri, string? apiKey, string? cookie, CancellationToken cancellationToken);
 }

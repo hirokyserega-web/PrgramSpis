@@ -21,9 +21,11 @@ public sealed class QwenProxyClient : IQwenProxyClient
         this.httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     }
 
-    public async Task<QwenProxyCapabilities> GetCapabilitiesAsync(Uri baseUri, CancellationToken cancellationToken)
+    public async Task<QwenProxyCapabilities> GetCapabilitiesAsync(Uri baseUri, string? apiKey, string? cookie, CancellationToken cancellationToken)
     {
         using HttpRequestMessage request = new(HttpMethod.Get, new Uri(baseUri, "health"));
+        AddAuthorization(request, apiKey);
+        AddCookie(request, cookie);
         using HttpResponseMessage response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
         string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         EnsureSuccess(response.StatusCode, body, "Qwen proxy health check failed.");
@@ -51,9 +53,11 @@ public sealed class QwenProxyClient : IQwenProxyClient
         }
     }
 
-    public async Task<List<string>> GetModelsAsync(Uri baseUri, CancellationToken cancellationToken)
+    public async Task<List<string>> GetModelsAsync(Uri baseUri, string? apiKey, string? cookie, CancellationToken cancellationToken)
     {
         using HttpRequestMessage request = new(HttpMethod.Get, new Uri(baseUri, "v1/models"));
+        AddAuthorization(request, apiKey);
+        AddCookie(request, cookie);
         using HttpResponseMessage response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
         string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         EnsureSuccess(response.StatusCode, body, "Qwen proxy model list request failed.");
@@ -82,6 +86,7 @@ public sealed class QwenProxyClient : IQwenProxyClient
     public async Task<QwenUploadedFile> UploadImageAsync(
         Uri baseUri,
         ScreenImage image,
+        string? apiKey,
         string? cookie,
         CancellationToken cancellationToken)
     {
@@ -103,10 +108,8 @@ public sealed class QwenProxyClient : IQwenProxyClient
         }
 
         using HttpRequestMessage request = new(HttpMethod.Post, new Uri(baseUri, "files/upload"));
-        if (!string.IsNullOrWhiteSpace(cookie))
-        {
-            request.Headers.TryAddWithoutValidation("Cookie", cookie);
-        }
+        AddAuthorization(request, apiKey);
+        AddCookie(request, cookie);
 
         using MultipartFormDataContent form = new();
         using ByteArrayContent fileContent = new(bytes);
@@ -151,6 +154,23 @@ public sealed class QwenProxyClient : IQwenProxyClient
         catch (HttpRequestException exception)
         {
             throw new QwenProxyException("Qwen proxy is unavailable.", exception);
+        }
+    }
+
+
+    private static void AddAuthorization(HttpRequestMessage request, string? apiKey)
+    {
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        }
+    }
+
+    private static void AddCookie(HttpRequestMessage request, string? cookie)
+    {
+        if (!string.IsNullOrWhiteSpace(cookie))
+        {
+            request.Headers.TryAddWithoutValidation("Cookie", cookie);
         }
     }
 

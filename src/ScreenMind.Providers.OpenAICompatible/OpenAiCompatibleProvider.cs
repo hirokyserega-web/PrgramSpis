@@ -63,16 +63,40 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
             yield break;
         }
 
-        bool isQwenProxy = await IsQwenProxyAsync(configuration.BaseUri, cancellationToken).ConfigureAwait(false);
-
-        string effectiveModelId = configuration.ModelId;
-        using HttpRequestMessage httpRequest = new(HttpMethod.Post, new Uri(configuration.BaseUri, "v1/chat/completions"));
-        if (!string.IsNullOrWhiteSpace(configuration.ApiKey))
+        bool isManagedQwen = IsManagedQwenProfile(request.Profile, configuration);
+        string? qwenCookie = await secretStore.GetAsync("qwen-cookie", cancellationToken).ConfigureAwait(false);
+        if (isManagedQwen)
         {
-            httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", configuration.ApiKey);
+            AiError? healthError = null;
+            try
+            {
+                QwenProxyCapabilities capabilities = await qwenProxyClient.GetCapabilitiesAsync(
+                    configuration.BaseUri,
+                    configuration.ApiKey,
+                    qwenCookie,
+                    cancellationToken).ConfigureAwait(false);
+                if (!capabilities.IsReady || !string.Equals(capabilities.Service, "FreeQwenApi", StringComparison.OrdinalIgnoreCase))
+                {
+                    healthError = new AiError(AiErrorKind.ServiceUnavailable, "FreeQwenApi health check did not report a ready Qwen proxy.");
+                }
+            }
+            catch (Exception exception)
+            {
+                healthError = new AiError(AiErrorKind.ServiceUnavailable, $"Qwen proxy health check failed: {exception.Message}");
+            }
+
+            if (healthError is not null)
+            {
+                yield return new AiStreamEvent.Failed(healthError, DateTimeOffset.UtcNow);
+                yield break;
+            }
         }
 
-        string? qwenCookie = await secretStore.GetAsync("qwen-cookie", cancellationToken).ConfigureAwait(false);
+        bool isQwenProxy = isManagedQwen;
+        string effectiveModelId = configuration.ModelId;
+        using HttpRequestMessage httpRequest = new(HttpMethod.Post, new Uri(configuration.BaseUri, "v1/chat/completions"));
+        AddBearer(httpRequest, configuration.ApiKey);
+
         if (isQwenProxy && !string.IsNullOrWhiteSpace(qwenCookie))
         {
             httpRequest.Headers.TryAddWithoutValidation("Cookie", qwenCookie);
@@ -84,7 +108,7 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
         {
             try
             {
-                uploadedFile = await qwenProxyClient.UploadImageAsync(configuration.BaseUri, request.Image, qwenCookie, cancellationToken).ConfigureAwait(false);
+                uploadedFile = await qwenProxyClient.UploadImageAsync(configuration.BaseUri, request.Image, configuration.ApiKey, qwenCookie, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -196,19 +220,32 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
     public async Task<IReadOnlyList<AiModel>> GetModelsAsync(CancellationToken cancellationToken)
     {
         ProviderRuntimeConfiguration configuration = await ResolveDefaultConfigurationAsync(cancellationToken).ConfigureAwait(false);
-        using HttpRequestMessage request = new(HttpMethod.Get, new Uri(configuration.BaseUri, "v1/models"));
-        if (!string.IsNullOrWhiteSpace(configuration.ApiKey))
-        {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", configuration.ApiKey);
-        }
-
         string? qwenCookie = await secretStore.GetAsync("qwen-cookie", cancellationToken).ConfigureAwait(false);
-        bool isQwenProxy = await IsQwenProxyAsync(configuration.BaseUri, cancellationToken).ConfigureAwait(false);
-        if (isQwenProxy && !string.IsNullOrWhiteSpace(qwenCookie))
+        bool isQwenProxy = IsManagedQwenProfile(
+            new AiProfile("qwen-check", "Qwen", Id, configuration.ModelId, string.Empty),
+            configuration);
+        if (isQwenProxy)
         {
-            request.Headers.TryAddWithoutValidation("Cookie", qwenCookie);
+            QwenProxyCapabilities capabilities = await qwenProxyClient.GetCapabilitiesAsync(
+                configuration.BaseUri,
+                configuration.ApiKey,
+                qwenCookie,
+                cancellationToken).ConfigureAwait(false);
+            if (!capabilities.IsReady || !string.Equals(capabilities.Service, "FreeQwenApi", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new AiProviderException(new AiError(AiErrorKind.ServiceUnavailable, "FreeQwenApi health check did not report a ready Qwen proxy."));
+            }
+
+            List<string> modelIds = await qwenProxyClient.GetModelsAsync(
+                configuration.BaseUri,
+                configuration.ApiKey,
+                qwenCookie,
+                cancellationToken).ConfigureAwait(false);
+            return modelIds.Select(model => new AiModel(model, model, model.Contains("vl", StringComparison.OrdinalIgnoreCase), true)).ToArray();
         }
 
+        using HttpRequestMessage request = new(HttpMethod.Get, new Uri(configuration.BaseUri, "v1/models"));
+        AddBearer(request, configuration.ApiKey);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
@@ -221,19 +258,26 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
     public async Task TestConnectionAsync(CancellationToken cancellationToken)
     {
         ProviderRuntimeConfiguration configuration = await ResolveDefaultConfigurationAsync(cancellationToken).ConfigureAwait(false);
-        using HttpRequestMessage request = new(HttpMethod.Get, new Uri(configuration.BaseUri, "v1/models"));
-        if (!string.IsNullOrWhiteSpace(configuration.ApiKey))
-        {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", configuration.ApiKey);
-        }
-
         string? qwenCookie = await secretStore.GetAsync("qwen-cookie", cancellationToken).ConfigureAwait(false);
-        bool isQwenProxy = await IsQwenProxyAsync(configuration.BaseUri, cancellationToken).ConfigureAwait(false);
-        if (isQwenProxy && !string.IsNullOrWhiteSpace(qwenCookie))
+        bool isQwenProxy = IsManagedQwenProfile(
+            new AiProfile("qwen-check", "Qwen", Id, configuration.ModelId, string.Empty),
+            configuration);
+        if (isQwenProxy)
         {
-            request.Headers.TryAddWithoutValidation("Cookie", qwenCookie);
+            QwenProxyCapabilities capabilities = await qwenProxyClient.GetCapabilitiesAsync(
+                configuration.BaseUri,
+                configuration.ApiKey,
+                qwenCookie,
+                cancellationToken).ConfigureAwait(false);
+            if (!capabilities.IsReady || !string.Equals(capabilities.Service, "FreeQwenApi", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new AiProviderException(new AiError(AiErrorKind.ServiceUnavailable, "FreeQwenApi health check did not report a ready Qwen proxy."));
+            }
+            return;
         }
 
+        using HttpRequestMessage request = new(HttpMethod.Get, new Uri(configuration.BaseUri, "v1/models"));
+        AddBearer(request, configuration.ApiKey);
         using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
@@ -253,7 +297,7 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
 
     private static object[] BuildMessages(AiRequest request, object? uploadedFile, bool isQwenProxy)
     {
-        var messagesList = new List<object>();
+        List<object> messagesList = new();
 
         // System prompt
         if (!string.IsNullOrWhiteSpace(request.Profile.SystemPrompt))
@@ -268,7 +312,7 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
         // Historical messages
         if (request.SessionMessages is not null)
         {
-            foreach (var msg in request.SessionMessages)
+            foreach (AiMessage msg in request.SessionMessages)
             {
                 if (msg.Role == AiMessageRole.User)
                 {
@@ -363,7 +407,7 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
     {
         object[] messages = BuildMessages(request, uploadedFile, isQwenProxy);
 
-        var bodyObj = new Dictionary<string, object>
+        Dictionary<string, object> bodyObj = new()
         {
             { "model", modelId },
             { "stream", true },
@@ -375,22 +419,18 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
             if (request.Conversation is not null)
             {
                 bodyObj["conversation_id"] = request.Conversation.ClientConversationId;
-                if (!string.IsNullOrWhiteSpace(request.Conversation.UpstreamChatId))
+                if (!string.IsNullOrWhiteSpace(request.Conversation.CurrentUpstreamChatId))
                 {
-                    bodyObj["chatId"] = request.Conversation.UpstreamChatId;
-                    bodyObj["chat_id"] = request.Conversation.UpstreamChatId;
+                    bodyObj["chatId"] = request.Conversation.CurrentUpstreamChatId;
+                    bodyObj["chat_id"] = request.Conversation.CurrentUpstreamChatId;
                 }
-                if (!string.IsNullOrWhiteSpace(request.Conversation.ParentId))
+                if (!string.IsNullOrWhiteSpace(request.Conversation.CurrentParentId))
                 {
-                    bodyObj["parentId"] = request.Conversation.ParentId;
-                    bodyObj["parent_id"] = request.Conversation.ParentId;
+                    bodyObj["parentId"] = request.Conversation.CurrentParentId;
+                    bodyObj["parent_id"] = request.Conversation.CurrentParentId;
                 }
             }
 
-            if (uploadedFile is not null)
-            {
-                bodyObj["files"] = new object[] { uploadedFile };
-            }
         }
         else
         {
@@ -458,29 +498,26 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
         string effectiveModel,
         string imageTransport);
 
+    private static void AddBearer(HttpRequestMessage request, string? apiKey)
+    {
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        }
+    }
+
     private static bool HasRealImage(AiRequest request)
         => request.Image is not null && (request.Image.Width != 1 || request.Image.Height != 1);
 
     private static bool IsDeepseekModel(string modelId)
         => modelId.StartsWith("deepseek", StringComparison.OrdinalIgnoreCase);
 
-    private async Task<bool> IsQwenProxyAsync(Uri baseUri, CancellationToken cancellationToken)
-    {
-        if (!baseUri.IsLoopback || !baseUri.AbsolutePath.Trim('/').StartsWith("api", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        try
-        {
-            var capabilities = await qwenProxyClient.GetCapabilitiesAsync(baseUri, cancellationToken).ConfigureAwait(false);
-            return capabilities.IsReady && string.Equals(capabilities.Service, "FreeQwenApi", StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return false;
-        }
-    }
+    private static bool IsManagedQwenProfile(AiProfile profile, ProviderRuntimeConfiguration configuration)
+        => profile.ProviderId.Equals("openai-compatible", StringComparison.OrdinalIgnoreCase)
+            && (profile.Id.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)
+                || configuration.ModelId.StartsWith("qwen", StringComparison.OrdinalIgnoreCase))
+            && configuration.BaseUri.IsLoopback
+            && configuration.BaseUri.AbsolutePath.Trim('/').StartsWith("api", StringComparison.OrdinalIgnoreCase);
 
     private static async Task<AiError> CreateHttpErrorAsync(
         HttpResponseMessage response,

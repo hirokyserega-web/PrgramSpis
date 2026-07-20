@@ -71,10 +71,7 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
         if (activeWindow is not null)
         {
             activeWindow.Show();
-            if (activeWindow.WindowState == WindowState.Minimized)
-            {
-                activeWindow.WindowState = WindowState.Normal;
-            }
+            activeWindow.Topmost = activeWindow.ViewModel.AlwaysOnTop;
 
             // Wait for next UI tick
             await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
