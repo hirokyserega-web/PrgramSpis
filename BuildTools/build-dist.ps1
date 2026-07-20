@@ -7,5 +7,5 @@ dotnet restore ScreenMind.sln
 dotnet build ScreenMind.sln -c Release --no-restore
 dotnet publish src\ScreenMind.App\ScreenMind.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o $dist
 $exe = Join-Path $dist 'SystemServiceHost.exe'
-if (!(Test-Path $exe)) { throw "Не найден $exe" }
-Write-Host "Готово: $exe"
+if (!(Test-Path $exe)) { throw "Executable was not produced: $exe" }
+Write-Host "Build complete: $exe"
