@@ -551,22 +551,22 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         string modelsFile = Path.Combine(dir, "src", "AvailableModels.txt");
         string mappingFile = Path.Combine(dir, "src", "api", "modelMapping.js");
         string chatFile = Path.Combine(dir, "src", "api", "chat.js");
+        string routesFile = Path.Combine(dir, "src", "api", "routes.js");
+
+        if (!IsRecognizedQwenProxy(dir, modelsFile, mappingFile, chatFile, routesFile))
+        {
+            return;
+        }
 
         if (File.Exists(modelsFile))
         {
             string modelsContent = await File.ReadAllTextAsync(modelsFile, cancellationToken).ConfigureAwait(false);
-            if (!modelsContent.Contains(modelId, StringComparison.OrdinalIgnoreCase))
+            if (!ContainsWholeLine(modelsContent, modelId))
             {
                 string lineEnding = modelsContent.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
                 string updatedModels = modelsContent.TrimEnd() + lineEnding + modelId + lineEnding;
                 await File.WriteAllTextAsync(modelsFile, updatedModels, cancellationToken).ConfigureAwait(false);
             }
-        }
-
-        if (!File.Exists(mappingFile))
-        {
-            await FixQwen38MaxPreviewPayloadAsync(chatFile, cancellationToken).ConfigureAwait(false);
-            return;
         }
 
         string content = await File.ReadAllTextAsync(mappingFile, cancellationToken).ConfigureAwait(false);
@@ -578,67 +578,52 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             content,
             @"CANONICAL_MODELS\s*=\s*Object\.freeze\(\[[\s\S]*?""" + escapedModelId + @"""",
             RegexOptions.IgnoreCase);
-
-        // Broken upstream layout: 3.8 listed under another model's aliases (usually 3.7-max).
         bool isAliasOfOtherModel = Regex.IsMatch(
             content,
             @"""qwen3\.7-max""\s*:\s*\[[\s\S]*?""" + escapedModelId + @"""",
             RegexOptions.IgnoreCase);
-
         bool hasOwnAliasGroup = Regex.IsMatch(
             content,
             @"ALIAS_GROUPS\s*=\s*Object\.freeze\(\{[\s\S]*?""" + escapedModelId + @"""\s*:",
             RegexOptions.IgnoreCase);
 
-        if (isCanonical && hasOwnAliasGroup && !isAliasOfOtherModel)
+        if (isAliasOfOtherModel)
         {
-            await FixQwen38MaxPreviewPayloadAsync(chatFile, cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        if (isAliasOfOtherModel || !isCanonical)
-        {
-            // Remove 3.8 ids that appear as plain array items (aliases / canonical rows).
-            // Group keys like "qwen3.8-max-preview": [ keep the colon and are left intact.
             content = Regex.Replace(
                 content,
-                @"^[ \t]*""(?:qwen3\.8-max-preview|Qwen3\.8-Max-Preview|qwen-3\.8-max-preview|qwen38-max-preview|qwen38-max|qwen3\.8-max|qwen3\.8)"",?[ \t]*\r?\n",
-                string.Empty,
-                RegexOptions.Multiline | RegexOptions.IgnoreCase);
-
-            isCanonical = Regex.IsMatch(
-                content,
-                @"CANONICAL_MODELS\s*=\s*Object\.freeze\(\[[\s\S]*?""" + escapedModelId + @"""",
-                RegexOptions.IgnoreCase);
-
-            hasOwnAliasGroup = Regex.IsMatch(
-                content,
-                @"ALIAS_GROUPS\s*=\s*Object\.freeze\(\{[\s\S]*?""" + escapedModelId + @"""\s*:",
-                RegexOptions.IgnoreCase);
+                @"(^[ \t]*""qwen3\.7-max""\s*:\s*\[[^\]]*)""(?:qwen3\.8-max-preview|Qwen3\.8-Max-Preview|qwen-3\.8-max-preview|qwen38-max-preview|qwen38-max|qwen3\.8-max|qwen3\.8)"",?",
+                "$1",
+                RegexOptions.Singleline | RegexOptions.IgnoreCase);
+            isCanonical = false;
+            hasOwnAliasGroup = false;
         }
 
         if (!isCanonical)
         {
-            string canonicalStart = "const CANONICAL_MODELS = Object.freeze([";
+            const string canonicalStart = "const CANONICAL_MODELS = Object.freeze([";
             int canonicalIndex = content.IndexOf(canonicalStart, StringComparison.OrdinalIgnoreCase);
-            if (canonicalIndex >= 0)
+            if (canonicalIndex < 0)
             {
-                int insertPos = canonicalIndex + canonicalStart.Length;
-                content = content.Insert(insertPos, $"{nl}    \"{modelId}\",");
+                return;
             }
+
+            int insertPos = canonicalIndex + canonicalStart.Length;
+            content = content.Insert(insertPos, $"{nl}    \"{modelId}\",");
         }
 
         if (!hasOwnAliasGroup)
         {
-            string aliasStart = "const ALIAS_GROUPS = Object.freeze({";
+            const string aliasStart = "const ALIAS_GROUPS = Object.freeze({";
             int aliasIndex = content.IndexOf(aliasStart, StringComparison.OrdinalIgnoreCase);
-            if (aliasIndex >= 0)
+            if (aliasIndex < 0)
             {
-                int insertPos = aliasIndex + aliasStart.Length;
-                string aliasLines = string.Join($",{nl}", modelAliases.Select(alias => $"        \"{alias}\""));
-                string insertText = $"{nl}    \"{modelId}\": [{nl}{aliasLines}{nl}    ],";
-                content = content.Insert(insertPos, insertText);
+                return;
             }
+
+            int insertPos = aliasIndex + aliasStart.Length;
+            string aliasLines = string.Join($",{nl}", modelAliases.Select(alias => $"        \"{alias}\""));
+            string insertText = $"{nl}    \"{modelId}\": [{nl}{aliasLines}{nl}    ],";
+            content = content.Insert(insertPos, insertText);
         }
 
         if (!string.Equals(content, original, StringComparison.Ordinal))
@@ -647,7 +632,30 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         }
 
         await FixQwen38MaxPreviewPayloadAsync(chatFile, cancellationToken).ConfigureAwait(false);
+        await FixQwen38MaxPreviewResponseAsync(chatFile, routesFile, cancellationToken).ConfigureAwait(false);
     }
+
+    private static bool IsRecognizedQwenProxy(string dir, string modelsFile, string mappingFile, string chatFile, string routesFile)
+    {
+        if (!File.Exists(Path.Combine(dir, PackageJsonFileName))
+            || !File.Exists(modelsFile)
+            || !File.Exists(mappingFile)
+            || !File.Exists(chatFile)
+            || !File.Exists(routesFile))
+        {
+            return false;
+        }
+
+        string mapping = File.ReadAllText(mappingFile);
+        string chat = File.ReadAllText(chatFile);
+        return mapping.Contains("const CANONICAL_MODELS = Object.freeze([", StringComparison.Ordinal)
+            && mapping.Contains("const ALIAS_GROUPS = Object.freeze({", StringComparison.Ordinal)
+            && chat.Contains("function buildPayloadV2(", StringComparison.Ordinal)
+            && chat.Contains("feature_config", StringComparison.Ordinal);
+    }
+
+    private static bool ContainsWholeLine(string content, string value)
+        => Regex.IsMatch(content, $"^\\s*{Regex.Escape(value)}\\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
 
     private static async Task FixQwen38MaxPreviewPayloadAsync(string chatFile, CancellationToken cancellationToken)
     {
@@ -664,38 +672,42 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         {
             const string payloadFunction = "function buildPayloadV2(messageContent, model, chatId, parentId, files, systemMessage, tools, toolChoice, chatType = 't2t', size = null) {";
             int payloadIndex = content.IndexOf(payloadFunction, StringComparison.Ordinal);
-            if (payloadIndex >= 0)
+            if (payloadIndex < 0)
             {
-                string helper =
-                    "function isQwen38MaxPreviewModel(model) {" + nl +
-                    "    return typeof model === 'string' && model.toLowerCase() === 'qwen3.8-max-preview';" + nl +
-                    "}" + nl + nl;
-                content = content.Insert(payloadIndex, helper);
+                return;
             }
+
+            string helper =
+                "function isQwen38MaxPreviewModel(model) {" + nl +
+                "    return typeof model === 'string' && model.toLowerCase() === 'qwen3.8-max-preview';" + nl +
+                "}" + nl + nl;
+            content = content.Insert(payloadIndex, helper);
         }
 
         if (!content.Contains("const qwen38MaxPreview = isQwen38MaxPreviewModel(model);", StringComparison.Ordinal))
         {
-            content = content.Replace(
+            string oldConfig =
                 "    const featureConfig = {" + nl +
                 "        thinking_enabled: isVideo," + nl +
                 "        output_schema: 'phase'" + nl +
-                "    };",
+                "    };";
+            string newConfig =
                 "    const qwen38MaxPreview = isQwen38MaxPreviewModel(model);" + nl +
                 "    const featureConfig = {" + nl +
                 "        thinking_enabled: isVideo || qwen38MaxPreview," + nl +
                 "        output_schema: 'phase'" + nl +
-                "    };",
-                StringComparison.Ordinal);
+                "    };";
+            content = content.Replace(oldConfig, newConfig, StringComparison.Ordinal);
         }
 
-        content = content.Replace(
+        string oldVideoConfig =
             "    if (isVideo) {" + nl +
             "        featureConfig.research_mode = 'normal';" + nl +
             "        featureConfig.auto_thinking = true;" + nl +
             "        featureConfig.thinking_format = 'summary';" + nl +
             "        featureConfig.auto_search = true;" + nl +
-            "    }",
+            "    }";
+        string newVideoConfig =
             "    if (isVideo || qwen38MaxPreview) {" + nl +
             "        featureConfig.research_mode = 'normal';" + nl +
             "        featureConfig.auto_thinking = true;" + nl +
@@ -703,13 +715,130 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             "    }" + nl +
             "    if (isVideo) {" + nl +
             "        featureConfig.auto_search = true;" + nl +
-            "    }",
-            StringComparison.Ordinal);
+            "    }";
+        content = content.Replace(oldVideoConfig, newVideoConfig, StringComparison.Ordinal);
 
         if (!string.Equals(content, original, StringComparison.Ordinal))
         {
             await File.WriteAllTextAsync(chatFile, content, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private static async Task FixQwen38MaxPreviewResponseAsync(string chatFile, string routesFile, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(chatFile) || !File.Exists(routesFile))
+        {
+            return;
+        }
+
+        string chat = await File.ReadAllTextAsync(chatFile, cancellationToken).ConfigureAwait(false);
+        string routes = await File.ReadAllTextAsync(routesFile, cancellationToken).ConfigureAwait(false);
+        if (chat.Contains("function emitQwenDelta", StringComparison.Ordinal)
+            && routes.Contains("function writeQwenDeltaSse", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        string nl = chat.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        string originalChat = chat;
+        const string nodeParser = "async function executeApiRequestWithNodeStreaming(apiUrl, payload, token, onChunk) {";
+        int parserIndex = chat.IndexOf(nodeParser, StringComparison.Ordinal);
+        if (parserIndex < 0)
+        {
+            return;
+        }
+
+        string helper =
+            "function emitQwenDelta(delta, onChunk) {" + nl +
+            "    if (typeof onChunk !== 'function' || !delta) return;" + nl +
+            "    const phase = typeof delta.phase === 'string' ? delta.phase.toLowerCase() : '';" + nl +
+            "    const reasoning = delta.reasoning_content ?? delta.reasoning ?? delta.thinking;" + nl +
+            "    if (typeof reasoning === 'string' && reasoning.length > 0) onChunk(reasoning, 'reasoning');" + nl +
+            "    if (typeof delta.content === 'string' && delta.content.length > 0) {" + nl +
+            "        onChunk(delta.content, phase === 'think' || phase === 'thinking' || phase === 'reasoning' ? 'reasoning' : 'content');" + nl +
+            "    }" + nl +
+            "}" + nl + nl;
+        chat = chat.Insert(parserIndex, helper);
+
+        string oldNode = """                        if (delta && delta.content) {
+                            fullContent += delta.content;
+                            if (typeof onChunk === 'function') {
+                                onChunk(delta.content);
+                                hasStreamedChunks = true;
+                            }
+                        }
+""";
+        string newNode = """                        if (delta) {
+                            if (typeof delta.content === 'string' && delta.content.length > 0) {
+                                const phase = typeof delta.phase === 'string' ? delta.phase.toLowerCase() : '';
+                                if (phase === 'think' || phase === 'thinking' || phase === 'reasoning') {
+                                    fullReasoning += delta.content;
+                                } else {
+                                    fullContent += delta.content;
+                                }
+                            }
+                            if (typeof delta.reasoning_content === 'string') fullReasoning += delta.reasoning_content;
+                            if (typeof delta.reasoning === 'string') fullReasoning += delta.reasoning;
+                            if (typeof delta.thinking === 'string') fullReasoning += delta.thinking;
+                            const emitted = typeof onChunk === 'function'
+                                && ((typeof delta.content === 'string' && delta.content.length > 0)
+                                    || (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0)
+                                    || (typeof delta.reasoning === 'string' && delta.reasoning.length > 0)
+                                    || (typeof delta.thinking === 'string' && delta.thinking.length > 0));
+                            emitQwenDelta(delta, onChunk);
+                            if (emitted) hasStreamedChunks = true;
+                        }
+"""
+        if oldNode not in chat:
+            return
+        chat = chat.replace("        let fullContent = '';" + nl, "        let fullContent = '';" + nl + "        let fullReasoning = '';" + nl, 1)
+        chat = chat.replace(oldNode.replace('\n', nl), newNode.replace('\n', nl), 1)
+        chat = chat.replace("message: { role: 'assistant', content: fullContent }," + nl, "message: { role: 'assistant', content: fullContent, ...(fullReasoning ? { reasoning_content: fullReasoning } : {}) }," + nl, 1)
+
+        const routesHelper =
+            "function writeQwenDeltaSse(res, mappedModel, chunk, kind) {" + nl +
+            "    const delta = kind === 'reasoning' ? { reasoning_content: chunk } : { content: chunk };" + nl +
+            "    res.write('data: ' + JSON.stringify({ id: 'chatcmpl-stream', object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: mappedModel || DEFAULT_MODEL, choices: [{ index: 0, delta, finish_reason: null }] }) + '\n\n');" + nl +
+            "}" + nl + nl;
+        const routeMarker = "function writeOpenAIUsageSse(res, base, usage = null) {";
+        int routeIndex = routes.IndexOf(routeMarker, StringComparison.Ordinal);
+        if (routeIndex < 0)
+        {
+            return;
+        }
+        routes = routes.Insert(routeIndex, routesHelper);
+        string oldCallback = """streamingCallback = (chunk) => {
+                        hasStreamedChunks = true;
+                        writeSse({
+""";
+        string newCallback = """streamingCallback = (chunk, kind = 'content') => {
+                        hasStreamedChunks = true;
+                        if (kind === 'reasoning') {
+                            writeQwenDeltaSse(res, mappedModel, chunk, kind);
+                            return;
+                        }
+                        writeSse({
+""";
+        routes = routes.Replace(oldCallback.Replace('\n', nl), newCallback.Replace('\n', nl), StringComparison.Ordinal);
+        string oldCallback2 = """streamingCallback = (chunk) => {
+                        hasStreamedChunks = true;
+                        // OpenWebUI не нуждается в role в чанках - только контент
+""";
+        string newCallback2 = """streamingCallback = (chunk, kind = 'content') => {
+                        hasStreamedChunks = true;
+                        if (kind === 'reasoning') {
+                            writeQwenDeltaSse(res, mappedModel, chunk, kind);
+                            return;
+                        }
+                        // OpenWebUI не нуждается в role в чанках - только контент
+""";
+        routes = routes.Replace(oldCallback2.Replace('\n', nl), newCallback2.Replace('\n', nl), StringComparison.Ordinal);
+        if (string.Equals(chat, originalChat, StringComparison.Ordinal))
+        {
+            return;
+        }
+        await File.WriteAllTextAsync(chatFile, chat, cancellationToken).ConfigureAwait(false);
+        await File.WriteAllTextAsync(routesFile, routes, cancellationToken).ConfigureAwait(false);
     }
 
     private void OnProcessExit(object? sender, EventArgs e)
