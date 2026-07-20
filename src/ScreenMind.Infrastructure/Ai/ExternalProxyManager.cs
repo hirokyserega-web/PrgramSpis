@@ -790,7 +790,6 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             "                            if (typeof delta.reasoning_content === 'string') fullReasoning += delta.reasoning_content;",
             "                            if (typeof delta.reasoning === 'string') fullReasoning += delta.reasoning;",
             "                            if (typeof delta.thinking === 'string') fullReasoning += delta.thinking;",
-            "                            if (delta.status === 'finished') finished = true;",
             "                            const emitted = typeof onChunk === 'function'",
             "                                && ((typeof delta.content === 'string' && delta.content.length > 0)",
             "                                    || (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0)",
