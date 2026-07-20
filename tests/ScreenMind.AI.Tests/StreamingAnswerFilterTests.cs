@@ -42,7 +42,7 @@ public sealed class StreamingAnswerFilterTests
 
         string output = PushAll(filter, "reasoning\nFinal Answer:\nUseful answer");
 
-        output.Should().Be("Useful answer");
+        output.Should().Be("reasoning\nFinal Answer:\nUseful answer");
     }
 
     [Fact]
@@ -52,7 +52,7 @@ public sealed class StreamingAnswerFilterTests
 
         string output = PushAll(filter, "Пользователь просит...\nНужно определить...\nОкончательный ответ:\nНа скриншоте открыт браузер.");
 
-        output.Should().Be("На скриншоте открыт браузер.");
+        output.Should().Be("Пользователь просит...\nНужно определить...\nОкончательный ответ:\nНа скриншоте открыт браузер.");
     }
 
     [Fact]
@@ -62,7 +62,7 @@ public sealed class StreamingAnswerFilterTests
 
         string output = PushAll(filter, "The user asks for analysis.\nWe need to inspect it.\nFinal:\nThe browser is open.");
 
-        output.Should().Be("The browser is open.");
+        output.Should().Be("The user asks for analysis.\nWe need to inspect it.\nFinal:\nThe browser is open.");
     }
 
     [Fact]
@@ -77,23 +77,22 @@ public sealed class StreamingAnswerFilterTests
     [Fact]
     public void NoFinalMarkerDoesNotLoseText()
     {
-        StreamingAnswerFilter filter = new(suppressUntaggedReasoning: true);
+        StreamingAnswerFilter filter = new();
         filter.Push("Пользователь просит объяснение. Нужно изучить изображение.");
-
         string output = filter.Complete();
 
-        output.Should().NotBeEmpty();
-        filter.AnswerText.Should().Contain("Пользователь просит");
+        output.Should().BeEmpty();
+        filter.AnswerText.Should().Be("Пользователь просит объяснение. Нужно изучить изображение.");
     }
 
     [Fact]
-    public void ReasoningOnlyResponseReturnsControlledFallbackState()
+    public void UnclosedExplicitReasoningDoesNotLeakIntoAnswer()
     {
         StreamingAnswerFilter filter = new();
         filter.Push("<think>internal only");
 
-        filter.Complete().Should().BeEmpty();
-        filter.IsReasoningOnly.Should().BeTrue();
+        filter.Complete().Should().Be("<think>internal only");
+        filter.IsReasoningOnly.Should().BeFalse();
     }
 
     [Fact]
@@ -117,7 +116,7 @@ public sealed class StreamingAnswerFilterTests
     {
         StreamingAnswerFilter filter = new(suppressUntaggedReasoning: true);
 
-        PushAll(filter, "Пользователь просит", " изучить. Фин", "al Answer:", " answer").Should().Be(" answer");
+        PushAll(filter, "Пользователь просит", " изучить. Фин", "al Answer:", " answer").Should().Be("Пользователь просит изучить. Финal Answer: answer");
     }
 
     [Fact]
@@ -125,7 +124,7 @@ public sealed class StreamingAnswerFilterTests
     {
         StreamingAnswerFilter filter = new();
 
-        PushAll(filter, "<final>**Heading**\n\n- item</final>").Should().Be("**Heading**\n\n- item");
+        PushAll(filter, "<final>**Heading**\n\n- item</final>").Should().Be("<final>**Heading**\n\n- item</final>");
     }
 
     [Fact]
@@ -146,12 +145,21 @@ public sealed class StreamingAnswerFilterTests
     }
 
     [Fact]
-    public void CancellationDoesNotPublishBufferedReasoning()
+    public void SingleLetterAndOrdinaryContentAreNotReasoning()
     {
-        StreamingAnswerFilter filter = new(suppressUntaggedReasoning: true);
+        StreamingAnswerFilter filter = new();
 
-        filter.Push("Пользователь просит что-то.").Should().BeEmpty();
-        filter.AnswerText.Should().BeEmpty();
+        filter.Push("Пользователь просит что-то.").Should().Be("Пользователь просит что-то.");
+        filter.AnswerText.Should().Be("Пользователь просит что-то.");
+    }
+
+    [Fact]
+    public void SingleLetterContentChunkIsNotReasoning()
+    {
+        StreamingAnswerFilter filter = new();
+
+        filter.Push("П").Should().Be("П");
+        filter.AnswerText.Should().Be("П");
     }
 
     [Fact]

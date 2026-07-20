@@ -125,7 +125,7 @@ public sealed class ProviderContractTests
             CreateClient(handler),
             CreateResolver("openai-compatible", "http://localhost:3264/api", "compatible-key", "secret", "qwen3.8-max-preview"),
             new FakeSecretStore("qwen-cookie", "cookie"),
-            new FakeQwenProxyClient { IsQwen = true, Models = new List<string> { "qwen3-vl-plus" } });
+            new FakeQwenProxyClient { IsQwen = true, Models = new List<string> { "qwen3.8-max-preview" } });
 
         AiRequest request = CreateImageRequest("openai-compatible", "qwen3.8-max-preview");
         await CollectAsync(provider.StreamAsync(request, CancellationToken.None));
@@ -134,7 +134,6 @@ public sealed class ProviderContractTests
         using JsonDocument body = JsonDocument.Parse(sentRequest.Body!);
         JsonElement root = body.RootElement;
         root.GetProperty("model").GetString().Should().Be("qwen3.8-max-preview");
-        sentRequest.Body.Should().NotContain("qwen3-vl-plus");
         root.GetProperty("messages").EnumerateArray().Last().GetProperty("files").GetArrayLength().Should().Be(1);
     }
 
@@ -153,14 +152,13 @@ public sealed class ProviderContractTests
 
         using JsonDocument body = JsonDocument.Parse(handler.Requests.Single().Body!);
         body.RootElement.GetProperty("model").GetString().Should().Be("qwen3.8-max-preview");
-        handler.Requests.Single().Body.Should().NotContain("qwen3-vl-plus");
     }
 
     [Fact]
     public async Task OpenAiCompatibleShouldUploadImageAndSendConversationStateOnQwenProxy()
     {
         QueueHttpMessageHandler handler = new(SseResponse("data: {\"chatId\":\"upstream-after\",\"parentId\":\"parent-after\",\"choices\":[]}\n\ndata: [DONE]\n\n"));
-        FakeQwenProxyClient fakeQwenClient = new FakeQwenProxyClient { IsQwen = true, Models = new List<string> { "qwen3-vl-plus" } };
+        FakeQwenProxyClient fakeQwenClient = new FakeQwenProxyClient { IsQwen = true, Models = new List<string> { "qwen3.8-max-preview" } };
         OpenAiCompatibleProvider provider = new(
             CreateClient(handler),
             CreateResolver("openai-compatible", "http://localhost:3264/api", "compatible-key", "secret", "qwen3.7-max"),
@@ -198,7 +196,14 @@ public sealed class ProviderContractTests
             Content = new StringContent("{\"success\":true,\"file\":{\"id\":\"file-1\",\"fileId\":\"file-1\",\"file_path\":\"/tmp/file\",\"name\":\"remote\",\"url\":\"http://file\",\"size\":3,\"type\":\"" + mediaType + "\"}}", Encoding.UTF8, "application/json")
         });
         QwenProxyClient client = new(CreateClient(handler));
-        ScreenImage image = new([1, 2, 3], mediaType, format, 800, 600, DateTimeOffset.UtcNow);
+        byte[] bytes = format switch
+        {
+            ScreenImageFormat.Png => [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+            ScreenImageFormat.Jpeg => [0xFF, 0xD8, 0xFF, 0xD9],
+            ScreenImageFormat.WebP => [0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50],
+            _ => throw new ArgumentOutOfRangeException(nameof(format)),
+        };
+        ScreenImage image = new(bytes, mediaType, format, 800, 600, DateTimeOffset.UtcNow);
 
         QwenUploadedFile uploaded = await client.UploadImageAsync(new Uri("http://localhost:3264/api/"), image, "qwen-api-key", "qwen-cookie", CancellationToken.None);
 
@@ -221,7 +226,7 @@ public sealed class ProviderContractTests
             },
             new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent("{\"data\":[{\"id\":\"qwen3.7-plus\"}]}", Encoding.UTF8, "application/json")
+                Content = new StringContent("{\"data\":[{\"id\":\"qwen3.7\"}]}", Encoding.UTF8, "application/json")
             });
         QwenProxyClient client = new(CreateClient(handler));
 
@@ -233,21 +238,24 @@ public sealed class ProviderContractTests
     }
 
     [Fact]
-    public async Task QwenHealthFailureStopsBeforeChatAndDoesNotSendInlineBase64()
+    public async Task OrdinaryQwenMessageDoesNotRequireHealthPreflight()
+    {
+        QueueHttpMessageHandler handler = new(SseResponse("data: {\"choices\":[{\"delta\":{\"content\":\"Да\"}}]}\n\ndata: [DONE]\n\n"));
+        FakeQwenProxyClient qwen = new() { HealthException = new QwenProxyException("health unavailable") };
+        OpenAiCompatibleProvider provider = new(CreateClient(handler), CreateResolver("openai-compatible", "http://localhost:3264/api", "compatible-key", "secret", "qwen3.8-max-preview"), new FakeSecretStore(null, null), qwen);
+        IReadOnlyList<AiStreamEvent> events = await CollectAsync(provider.StreamAsync(CreateTextRequest("openai-compatible", "qwen3.8-max-preview"), CancellationToken.None));
+        events.OfType<AiStreamEvent.TextDelta>().Single().Text.Should().Be("Да");
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task InvalidImageSignatureIsRejectedBeforeUpload()
     {
         QueueHttpMessageHandler handler = new();
-        FakeQwenProxyClient qwen = new() { HealthException = new QwenProxyException("health unavailable") };
-        OpenAiCompatibleProvider provider = new(
-            CreateClient(handler),
-            CreateResolver("openai-compatible", "http://localhost:3264/api", "compatible-key", "secret", "qwen3.7-plus"),
-            new FakeSecretStore(null, null),
-            qwen);
-
-        IReadOnlyList<AiStreamEvent> events = await CollectAsync(provider.StreamAsync(CreateImageRequest("openai-compatible", "qwen3.7-plus"), CancellationToken.None));
-
-        events.OfType<AiStreamEvent.Failed>().Single().Error.Message.Should().Contain("health");
+        QwenProxyClient client = new(CreateClient(handler));
+        Func<Task> action = () => client.UploadImageAsync(new Uri("http://localhost:3264/api/"), new ScreenImage([1, 2, 3], "image/png", ScreenImageFormat.Png, 320, 200, DateTimeOffset.UtcNow), "key", null, CancellationToken.None);
+        await action.Should().ThrowAsync<QwenProxyException>().WithMessage("*bytes do not match*");
         handler.Requests.Should().BeEmpty();
-        qwen.UploadCalls.Should().Be(0);
     }
 
     [Fact]
@@ -259,13 +267,13 @@ public sealed class ProviderContractTests
         FakeQwenProxyClient qwen = new() { IsQwen = true };
         OpenAiCompatibleProvider provider = new(
             CreateClient(handler),
-            CreateResolver("openai-compatible", "http://localhost:3264/api", "compatible-key", "secret", "qwen3.7-plus"),
+            CreateResolver("openai-compatible", "http://localhost:3264/api", "compatible-key", "secret", "qwen3.7"),
             new FakeSecretStore(null, null),
             qwen);
         ProviderConversationState conversation = new("openai-compatible", "client-conv-id");
 
-        await CollectAsync(provider.StreamAsync(new AiRequest(new AiProfile("qwen", "Qwen", "openai-compatible", "qwen3.7-plus", "exact-system"), null, "one", [], conversation), CancellationToken.None));
-        await CollectAsync(provider.StreamAsync(new AiRequest(new AiProfile("qwen", "Qwen", "openai-compatible", "qwen3.7-plus", "exact-system"), null, "two", [], conversation), CancellationToken.None));
+        await CollectAsync(provider.StreamAsync(new AiRequest(new AiProfile("qwen", "Qwen", "openai-compatible", "qwen3.7", "exact-system"), null, "one", [], conversation), CancellationToken.None));
+        await CollectAsync(provider.StreamAsync(new AiRequest(new AiProfile("qwen", "Qwen", "openai-compatible", "qwen3.7", "exact-system"), null, "two", [], conversation), CancellationToken.None));
 
         using JsonDocument second = JsonDocument.Parse(handler.Requests[1].Body!);
         second.RootElement.GetProperty("chatId").GetString().Should().Be("chat-after");

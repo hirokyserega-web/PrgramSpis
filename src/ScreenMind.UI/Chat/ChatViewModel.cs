@@ -402,12 +402,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 models.Add("custom");
                 break;
             case "qwen":
-                models.Add("qwen3.7-plus");
+                models.Add("qwen3.7");
                 models.Add("qwen3.7-max");
                 models.Add("qwen3.8-max-preview");
-                models.Add("qwen3-vl-plus");
-                models.Add("qwen-vl-plus");
-                models.Add("qwen-vl-max");
                 models.Add("custom");
                 break;
             case "deepseek":
@@ -659,11 +656,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 session.Messages.Take(session.Messages.Count - 2).ToArray(),
                 session.ConversationState);
 
-            StreamingAnswerFilter answerFilter = new(
-                suppressUntaggedReasoning: string.Equals(
-                    effectiveProfile.ModelId,
-                    "qwen3.8-max-preview",
-                    StringComparison.OrdinalIgnoreCase));
+            StreamingAnswerFilter answerFilter = new(suppressUntaggedReasoning: false);
             StringBuilder visibleAnswer = new();
             DateTimeOffset lastUiUpdate = DateTimeOffset.MinValue;
             int assistantIndex = session.Messages.Count - 1;
@@ -722,6 +715,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 }
                 else if (ev is AiStreamEvent.Failed failed)
                 {
+                    string remaining = answerFilter.Complete();
+                    if (!string.IsNullOrEmpty(remaining))
+                    {
+                        visibleAnswer.Append(remaining);
+                    }
+                    PublishAssistantMessage(force: true);
                     throw new InvalidOperationException(failed.Error.Message);
                 }
             }

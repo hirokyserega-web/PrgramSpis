@@ -65,33 +65,6 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
 
         bool isManagedQwen = IsManagedQwenProfile(request.Profile, configuration);
         string? qwenCookie = await secretStore.GetAsync("qwen-cookie", cancellationToken).ConfigureAwait(false);
-        if (isManagedQwen)
-        {
-            AiError? healthError = null;
-            try
-            {
-                QwenProxyCapabilities capabilities = await qwenProxyClient.GetCapabilitiesAsync(
-                    configuration.BaseUri,
-                    configuration.ApiKey,
-                    qwenCookie,
-                    cancellationToken).ConfigureAwait(false);
-                if (!capabilities.IsReady || !string.Equals(capabilities.Service, "FreeQwenApi", StringComparison.OrdinalIgnoreCase))
-                {
-                    healthError = new AiError(AiErrorKind.ServiceUnavailable, "FreeQwenApi health check did not report a ready Qwen proxy.");
-                }
-            }
-            catch (Exception exception)
-            {
-                healthError = new AiError(AiErrorKind.ServiceUnavailable, $"Qwen proxy health check failed: {exception.Message}");
-            }
-
-            if (healthError is not null)
-            {
-                yield return new AiStreamEvent.Failed(healthError, DateTimeOffset.UtcNow);
-                yield break;
-            }
-        }
-
         bool isQwenProxy = isManagedQwen;
         string effectiveModelId = configuration.ModelId;
         using HttpRequestMessage httpRequest = new(HttpMethod.Post, new Uri(configuration.BaseUri, "v1/chat/completions"));
@@ -102,13 +75,14 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
             httpRequest.Headers.TryAddWithoutValidation("Cookie", qwenCookie);
         }
 
-        object? uploadedFile = null;
+        QwenChatAttachment? uploadedFile = null;
         Exception? uploadException = null;
         if (isQwenProxy && HasRealImage(request) && request.Image is not null)
         {
             try
             {
-                uploadedFile = await qwenProxyClient.UploadImageAsync(configuration.BaseUri, request.Image, configuration.ApiKey, qwenCookie, cancellationToken).ConfigureAwait(false);
+                QwenUploadedFile upload = await qwenProxyClient.UploadImageAsync(configuration.BaseUri, request.Image, configuration.ApiKey, qwenCookie, cancellationToken).ConfigureAwait(false);
+                uploadedFile = QwenChatAttachment.FromUpload(upload);
             }
             catch (Exception exception)
             {
@@ -311,7 +285,7 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
             cancellationToken);
     }
 
-    private static object[] BuildMessages(AiRequest request, object? uploadedFile, bool isQwenProxy)
+    private static object[] BuildMessages(AiRequest request, QwenChatAttachment? uploadedFile, bool isQwenProxy)
     {
         List<object> messagesList = new();
 
@@ -418,7 +392,7 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
     private static Dictionary<string, object> BuildBody(
         AiRequest request,
         string modelId,
-        object? uploadedFile,
+        QwenChatAttachment? uploadedFile,
         bool isQwenProxy)
     {
         object[] messages = BuildMessages(request, uploadedFile, isQwenProxy);

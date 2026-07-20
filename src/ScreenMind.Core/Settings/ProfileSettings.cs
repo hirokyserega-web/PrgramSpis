@@ -24,7 +24,7 @@ public sealed class ProfileSettings
                 new("uiux", "UI/UX", "openai", "gpt-4o-mini", "Review UI quality, hierarchy, accessibility, and usability."),
                 new("qwen-free", "Qwen Free (FreeQwenApi)", "openai-compatible", "qwen3.7-max", "Analyze the screenshot and answer clearly."),
                 new("qwen3.8-max-preview", "Qwen 3.8 Max Preview (FreeQwenApi)", "openai-compatible", "qwen3.8-max-preview", "Analyze the screenshot and answer clearly."),
-                new("qwen-vl", "Qwen VL (FreeQwenApi)", "openai-compatible", "qwen3-vl-plus", "Analyze the image and describe what you see in detail."),
+                new("qwen-vl", "Qwen Vision (FreeQwenApi)", "openai-compatible", "qwen3.8-max-preview", "Analyze the image and describe what you see in detail."),
                 new("deepseek-free", "Deepseek Free (FreeDeepseekAPI)", "openai-compatible", "deepseek-reasoner", "Analyze the screenshot and solve step-by-step."),
                 new("kimi-free", "Kimi Free (FreeGLMKimiAPI)", "openai-compatible", "kimi", "Analyze the screenshot and translate or summarize clearly."),
             ],

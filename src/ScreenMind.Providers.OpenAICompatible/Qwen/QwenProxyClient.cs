@@ -98,6 +98,7 @@ public sealed class QwenProxyClient : IQwenProxyClient
         }
 
         byte[] bytes = image.Bytes.ToArray();
+        ValidateImageSignature(image.Format, bytes);
         if (bytes.Length == 0)
         {
             throw new QwenProxyException("Qwen image upload failed because the image is empty.");
@@ -198,6 +199,21 @@ public sealed class QwenProxyClient : IQwenProxyClient
             || body.Contains("rgv587", StringComparison.OrdinalIgnoreCase)
             || body.Contains("purecaptcha", StringComparison.OrdinalIgnoreCase)
             || body.Contains("fail_sys_user_validate", StringComparison.OrdinalIgnoreCase);
+
+    private static void ValidateImageSignature(ScreenImageFormat format, byte[] bytes)
+    {
+        bool valid = format switch
+        {
+            ScreenImageFormat.Png => bytes.Length >= 8 && new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }.SequenceEqual(bytes[..8]),
+            ScreenImageFormat.Jpeg => bytes.Length >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF,
+            ScreenImageFormat.WebP => bytes.Length >= 12 && bytes[..4].SequenceEqual("RIFF"u8.ToArray()) && bytes[8..12].SequenceEqual("WEBP"u8.ToArray()),
+            _ => false,
+        };
+        if (!valid)
+        {
+            throw new QwenProxyException("Qwen image upload rejected: image bytes do not match the declared format.");
+        }
+    }
 
     private static (string Extension, string MediaType) GetUploadFormat(ScreenImageFormat format)
         => format switch
