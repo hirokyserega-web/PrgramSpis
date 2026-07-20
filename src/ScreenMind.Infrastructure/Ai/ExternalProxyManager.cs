@@ -724,6 +724,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1861", Justification = "The replacement arrays depend on the runtime line ending and are used only while applying the patch.")]
     private static async Task FixQwen38MaxPreviewResponseAsync(string chatFile, string routesFile, CancellationToken cancellationToken)
     {
         if (!File.Exists(chatFile) || !File.Exists(routesFile))
@@ -748,7 +749,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             return;
         }
 
-        string helper = string.Join(nl, new string[]
+        string helper = string.Join(nl, new[]
         {
             "function emitQwenDelta(delta, onChunk) {",
             "    if (typeof onChunk !== 'function' || !delta) return;",
@@ -764,7 +765,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         });
         chat = chat.Insert(parserIndex, helper);
 
-        string oldNode = string.Join(nl, new string[]
+        string oldNode = string.Join(nl, new[]
         {
             "                        if (delta && delta.content) {",
             "                            fullContent += delta.content;",
@@ -775,7 +776,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             "                        }",
             ""
         });
-        string newNode = string.Join(nl, new string[]
+        string newNode = string.Join(nl, new[]
         {
             "                        if (delta) {",
             "                            if (typeof delta.content === 'string' && delta.content.length > 0) {",
@@ -807,7 +808,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         chat = chat.Replace(oldNode, newNode, StringComparison.Ordinal);
         chat = chat.Replace("message: { role: 'assistant', content: fullContent }," + nl, "message: { role: 'assistant', content: fullContent, ...(fullReasoning ? { reasoning_content: fullReasoning } : {}) }," + nl, StringComparison.Ordinal);
 
-        string routesHelper = string.Join(nl, new string[]
+        string routesHelper = string.Join(nl, new[]
         {
             "function writeQwenDeltaSse(res, mappedModel, chunk, kind) {",
             "    const delta = kind === 'reasoning' ? { reasoning_content: chunk } : { content: chunk };",
@@ -823,14 +824,14 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             return;
         }
         routes = routes.Insert(routeIndex, routesHelper);
-        string oldCallback = string.Join(nl, new string[]
+        string oldCallback = string.Join(nl, new[]
         {
             "streamingCallback = (chunk) => {",
             "                        hasStreamedChunks = true;",
             "                        writeSse({",
             ""
         });
-        string newCallback = string.Join(nl, new string[]
+        string newCallback = string.Join(nl, new[]
         {
             "streamingCallback = (chunk, kind = 'content') => {",
             "                        hasStreamedChunks = true;",
@@ -842,14 +843,14 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             ""
         });
         routes = routes.Replace(oldCallback, newCallback, StringComparison.Ordinal);
-        string oldCallback2 = string.Join(nl, new string[]
+        string oldCallback2 = string.Join(nl, new[]
         {
             "streamingCallback = (chunk) => {",
             "                        hasStreamedChunks = true;",
             "                        // OpenWebUI не нуждается в role в чанках - только контент",
             ""
         });
-        string newCallback2 = string.Join(nl, new string[]
+        string newCallback2 = string.Join(nl, new[]
         {
             "streamingCallback = (chunk, kind = 'content') => {",
             "                        hasStreamedChunks = true;",
