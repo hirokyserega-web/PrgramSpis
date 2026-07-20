@@ -32,7 +32,7 @@ public sealed class ProviderContractTests
             """));
         OpenAiProvider provider = new(CreateClient(handler), CreateResolver("openai", "https://unit.test/", "openai-api-key", "secret"));
 
-        IReadOnlyList<AiStreamEvent> events = await CollectAsync(provider.StreamAsync(CreateRequest("openai"), CancellationToken.None));
+        IReadOnlyList<AiStreamEvent> events = await CollectAsync(provider.StreamAsync(CreateImageRequest("openai"), CancellationToken.None));
 
         handler.Requests.Single().Uri.Should().Be("https://unit.test/v1/responses");
         handler.Requests.Single().Authorization.Should().Be("Bearer secret");
@@ -103,14 +103,14 @@ public sealed class ProviderContractTests
     [Fact]
     public async Task Qwen38MaxPreviewImageRequestMustNotSwitchModel()
     {
-        QueueHttpMessageHandler handler = new(SseResponse("data: [DONE]\n\n"));
+        QueueHttpMessageHandler handler = new(SseResponse("data: {\"chatId\":\"upstream-after\",\"parentId\":\"parent-after\",\"choices\":[]}\n\ndata: [DONE]\n\n"));
         OpenAiCompatibleProvider provider = new(
             CreateClient(handler),
             CreateResolver("openai-compatible", "http://localhost:3264/api", "compatible-key", "secret", "qwen3.8-max-preview"),
             new FakeSecretStore("qwen-cookie", "cookie"),
             new FakeQwenProxyClient { IsQwen = true, Models = new List<string> { "qwen3-vl-plus" } });
 
-        AiRequest request = CreateRequest("openai-compatible", "qwen3.8-max-preview");
+        AiRequest request = CreateImageRequest("openai-compatible", "qwen3.8-max-preview");
         await CollectAsync(provider.StreamAsync(request, CancellationToken.None));
 
         RecordedRequest sentRequest = handler.Requests.Single();
@@ -142,7 +142,7 @@ public sealed class ProviderContractTests
     [Fact]
     public async Task OpenAiCompatibleShouldUploadImageAndSendConversationStateOnQwenProxy()
     {
-        QueueHttpMessageHandler handler = new(SseResponse("data: [DONE]\n\n"));
+        QueueHttpMessageHandler handler = new(SseResponse("data: {\"chatId\":\"upstream-after\",\"parentId\":\"parent-after\",\"choices\":[]}\n\ndata: [DONE]\n\n"));
         var fakeQwenClient = new FakeQwenProxyClient { IsQwen = true, Models = new List<string> { "qwen3-vl-plus" } };
         OpenAiCompatibleProvider provider = new(
             CreateClient(handler),
@@ -150,7 +150,7 @@ public sealed class ProviderContractTests
             new FakeSecretStore(null, null),
             fakeQwenClient);
 
-        var conversation = new ProviderConversationState("openai-compatible", "client-conv-id", "upstream-chat-id", "parent-id");
+        ProviderConversationState conversation = new("openai-compatible", "client-conv-id", "upstream-chat-id", "parent-id");
         var request = new AiRequest(
             new AiProfile("profile", "Profile", "openai-compatible", "qwen3.7-max", "system"),
             new ScreenImage([1, 2, 3], "image/png", ScreenImageFormat.Png, 800, 600, DateTimeOffset.UtcNow),
@@ -165,6 +165,8 @@ public sealed class ProviderContractTests
         handler.Requests.Single().Body.Should().Contain("\"chatId\":\"upstream-chat-id\"");
         handler.Requests.Single().Body.Should().Contain("\"parentId\":\"parent-id\"");
         handler.Requests.Single().Body.Should().Contain("\"files\"");
+        conversation.CurrentUpstreamChatId.Should().Be("upstream-after");
+        conversation.CurrentParentId.Should().Be("parent-after");
     }
 
     [Fact]
@@ -237,7 +239,7 @@ public sealed class ProviderContractTests
             CreateResolver("openai-compatible", "http://localhost:9655/", "compatible-key", "secret", "deepseek-chat"),
             new FakeSecretStore(null, null));
 
-        IReadOnlyList<AiStreamEvent> events = await CollectAsync(provider.StreamAsync(CreateRequest("openai-compatible", "deepseek-chat"), CancellationToken.None));
+        IReadOnlyList<AiStreamEvent> events = await CollectAsync(provider.StreamAsync(CreateImageRequest("openai-compatible", "deepseek-chat"), CancellationToken.None));
 
         events.OfType<AiStreamEvent.Failed>().Single().Error.Kind.Should().Be(AiErrorKind.UnsupportedModel);
         handler.Requests.Should().BeEmpty();
@@ -367,10 +369,21 @@ public sealed class ProviderContractTests
     {
         return new AiRequest(
             new AiProfile("profile", "Profile", providerId, modelId, "system"),
-            image ?? new ScreenImage([1, 2, 3], "image/png", ScreenImageFormat.Png, 800, 600, DateTimeOffset.UtcNow),
+            image,
             "question",
             []);
     }
+
+    private static AiRequest CreateImageRequest(string providerId, string modelId = "model")
+    {
+        return CreateRequest(
+            providerId,
+            modelId,
+            new ScreenImage([1, 2, 3], "image/png", ScreenImageFormat.Png, 800, 600, DateTimeOffset.UtcNow));
+    }
+
+    private static AiRequest CreateTextRequest(string providerId, string modelId = "model")
+        => CreateRequest(providerId, modelId);
 
     private static HttpResponseMessage SseResponse(string body)
     {

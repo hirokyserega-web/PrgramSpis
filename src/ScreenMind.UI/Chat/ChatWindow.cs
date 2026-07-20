@@ -540,7 +540,15 @@ public sealed class ChatWindow : Window, IDisposable
                     decoded.PixelSize.Width,
                     decoded.PixelSize.Height,
                     DateTimeOffset.UtcNow);
-                await viewModel.CreateSessionFromImageAsync(screenImage, CancellationToken.None);
+                try
+                {
+                    await viewModel.CreateSessionFromImageAsync(screenImage, CancellationToken.None);
+                }
+                catch
+                {
+                    screenImage.Dispose();
+                    throw;
+                }
             }
         };
         inputGrid.Children.Add(attachBtn);
@@ -1786,7 +1794,15 @@ public sealed class ChatWindow : Window, IDisposable
             decoded.PixelSize.Width,
             decoded.PixelSize.Height,
             DateTimeOffset.UtcNow);
-        await viewModel.CreateSessionFromImageAsync(screenImage, CancellationToken.None);
+        try
+        {
+            await viewModel.CreateSessionFromImageAsync(screenImage, CancellationToken.None);
+        }
+        catch
+        {
+            screenImage.Dispose();
+            throw;
+        }
     }
 
     private static string GetSessionTitle(ChatSession session)

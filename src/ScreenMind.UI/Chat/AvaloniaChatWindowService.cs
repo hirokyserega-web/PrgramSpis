@@ -70,12 +70,11 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
 
         if (activeWindow is not null)
         {
+            activeWindow.Show();
             if (activeWindow.WindowState == WindowState.Minimized)
             {
                 activeWindow.WindowState = WindowState.Normal;
             }
-
-            activeWindow.Show();
 
             // Wait for next UI tick
             await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
@@ -401,7 +400,6 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
             }
             catch (Exception exception)
             {
-                image.Dispose();
                 Dispatcher.UIThread.Post(() =>
                 {
                     if (exception is ObjectDisposedException)

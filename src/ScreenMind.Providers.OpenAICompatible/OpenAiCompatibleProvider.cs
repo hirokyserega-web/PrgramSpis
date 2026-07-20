@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -16,7 +17,7 @@ using ScreenMind.Providers.OpenAICompatible.Qwen;
 
 namespace ScreenMind.Providers.OpenAICompatible;
 
-public sealed class OpenAiCompatibleProvider : IAiProvider
+public sealed partial class OpenAiCompatibleProvider : IAiProvider
 {
     private static readonly Uri DefaultBaseUri = new("http://localhost:8080/");
     private static readonly char[] WhitespaceChars = [' ', '\r', '\n', '\t'];
@@ -105,11 +106,14 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
             Encoding.UTF8,
             "application/json");
 
-        logger?.LogInformation(
-            "Selected model: {SelectedModel}; Effective model: {EffectiveModel}; Image transport: {ImageTransport}",
-            configuration.ModelId,
-            effectiveModelId,
-            uploadedFile is not null ? "Qwen uploaded file" : "Inline image or text");
+        if (logger is not null)
+        {
+            LogModelSelection(
+                logger,
+                configuration.ModelId,
+                effectiveModelId,
+                uploadedFile is not null ? "Qwen uploaded file" : "Inline image or text");
+        }
 
         HttpResponseMessage? response = null;
         AiError? startupFailure = null;
@@ -171,7 +175,9 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
                 using (document)
                 {
                     JsonElement root = document!.RootElement;
+                    UpdateConversationState(request.Conversation, root, response);
                     if (root.TryGetProperty("choices", out JsonElement choices)
+                        && choices.ValueKind == JsonValueKind.Array
                         && choices.GetArrayLength() > 0
                         && choices[0].TryGetProperty("delta", out JsonElement delta)
                         && delta.TryGetProperty("content", out JsonElement content))
@@ -403,6 +409,54 @@ public sealed class OpenAiCompatibleProvider : IAiProvider
 
         return bodyObj;
     }
+
+    private static void UpdateConversationState(
+        ProviderConversationState? conversation,
+        JsonElement root,
+        HttpResponseMessage response)
+    {
+        if (conversation is null)
+        {
+            return;
+        }
+
+        conversation.CurrentUpstreamChatId = FirstString(root, "chatId", "chat_id", "x_qwen_chat_id")
+            ?? HeaderValue(response, "x-qwen-chat-id")
+            ?? conversation.CurrentUpstreamChatId;
+        conversation.CurrentParentId = FirstString(root, "parentId", "parent_id", "x_qwen_parent_id", "response_id")
+            ?? HeaderValue(response, "x-qwen-parent-id")
+            ?? conversation.CurrentParentId;
+    }
+
+    private static string? FirstString(JsonElement root, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            if (root.TryGetProperty(name, out JsonElement value)
+                && value.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(value.GetString()))
+            {
+                return value.GetString();
+            }
+        }
+
+        return null;
+    }
+
+    private static string? HeaderValue(HttpResponseMessage response, string name)
+        => response.Headers.TryGetValues(name, out IEnumerable<string>? values)
+            ? values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+            : null;
+
+    [LoggerMessage(
+        EventId = 2001,
+        Level = LogLevel.Information,
+        Message = "Selected model: {SelectedModel}; Effective model: {EffectiveModel}; Image transport: {ImageTransport}")]
+    private static partial void LogModelSelection(
+        ILogger logger,
+        string selectedModel,
+        string effectiveModel,
+        string imageTransport);
 
     private static bool HasRealImage(AiRequest request)
         => request.Image is not null && (request.Image.Width != 1 || request.Image.Height != 1);

@@ -1,4 +1,3 @@
-using System;
 using System.Text.Json.Serialization;
 
 namespace ScreenMind.Providers.OpenAICompatible.Qwen;
@@ -35,6 +34,6 @@ public sealed record QwenUploadedFile
         Name = name;
         Url = url;
         Size = size;
-        Type = type.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ? "image" : type;
+        Type = type;
     }
 }

@@ -402,8 +402,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 models.Add("custom");
                 break;
             case "qwen":
-                models.Add("qwen-3.7-plus");
-                models.Add("qwen-3.7-max");
+                models.Add("qwen3.7");
                 models.Add("qwen3.7-max");
                 models.Add("qwen3.8-max-preview");
                 models.Add("qwen3-vl-plus");
