@@ -748,7 +748,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             return;
         }
 
-        string helper = string.Join(nl, new[]
+        string helper = string.Join(nl, new string[]
         {
             "function emitQwenDelta(delta, onChunk) {",
             "    if (typeof onChunk !== 'function' || !delta) return;",
@@ -764,7 +764,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         });
         chat = chat.Insert(parserIndex, helper);
 
-        string oldNode = string.Join(nl, new[]
+        string oldNode = string.Join(nl, new string[]
         {
             "                        if (delta && delta.content) {",
             "                            fullContent += delta.content;",
@@ -775,7 +775,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             "                        }",
             ""
         });
-        string newNode = string.Join(nl, new[]
+        string newNode = string.Join(nl, new string[]
         {
             "                        if (delta) {",
             "                            if (typeof delta.content === 'string' && delta.content.length > 0) {",
@@ -807,7 +807,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         chat = chat.Replace(oldNode, newNode, StringComparison.Ordinal);
         chat = chat.Replace("message: { role: 'assistant', content: fullContent }," + nl, "message: { role: 'assistant', content: fullContent, ...(fullReasoning ? { reasoning_content: fullReasoning } : {}) }," + nl, StringComparison.Ordinal);
 
-        string routesHelper = string.Join(nl, new[]
+        string routesHelper = string.Join(nl, new string[]
         {
             "function writeQwenDeltaSse(res, mappedModel, chunk, kind) {",
             "    const delta = kind === 'reasoning' ? { reasoning_content: chunk } : { content: chunk };",
@@ -823,14 +823,14 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             return;
         }
         routes = routes.Insert(routeIndex, routesHelper);
-        string oldCallback = string.Join(nl, new[]
+        string oldCallback = string.Join(nl, new string[]
         {
             "streamingCallback = (chunk) => {",
             "                        hasStreamedChunks = true;",
             "                        writeSse({",
             ""
         });
-        string newCallback = string.Join(nl, new[]
+        string newCallback = string.Join(nl, new string[]
         {
             "streamingCallback = (chunk, kind = 'content') => {",
             "                        hasStreamedChunks = true;",
@@ -842,14 +842,14 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             ""
         });
         routes = routes.Replace(oldCallback, newCallback, StringComparison.Ordinal);
-        string oldCallback2 = string.Join(nl, new[]
+        string oldCallback2 = string.Join(nl, new string[]
         {
             "streamingCallback = (chunk) => {",
             "                        hasStreamedChunks = true;",
             "                        // OpenWebUI не нуждается в role в чанках - только контент",
             ""
         });
-        string newCallback2 = string.Join(nl, new[]
+        string newCallback2 = string.Join(nl, new string[]
         {
             "streamingCallback = (chunk, kind = 'content') => {",
             "                        hasStreamedChunks = true;",
