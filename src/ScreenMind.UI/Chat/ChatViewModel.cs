@@ -1,6 +1,10 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Avalonia;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -23,6 +27,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private readonly ISettingsStore settingsStore;
     private readonly ISecretStore secretStore;
     private readonly IHotkeyService hotkeyService;
+    private readonly HttpClient httpClient = new();
 
     public event EventHandler? NewCaptureRequested;
     public event EventHandler? ActiveWindowCaptureRequested;
@@ -243,6 +248,20 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string notionApiMasterKey = string.Empty;
 
+    private List<string> notionModels =
+    [
+        "opus-4.6",
+        "sonnet-4.6",
+        "haiku-4.5",
+        "gpt-5.2",
+        "gpt-5.4",
+        "gemini-2.5-flash",
+        "gemini-3-flash",
+        "minimax-m2.5",
+        "researcher",
+        "fast-researcher",
+    ];
+
     [ObservableProperty]
     private bool isNotionInstalled;
     [ObservableProperty]
@@ -462,10 +481,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 models.Add("kimi");
                 break;
             case "notion":
-                models.Add("claude-sonnet-4.5");
-                models.Add("gpt-5");
-                models.Add("claude-opus-4.1");
-                models.Add("gpt-4.1");
+                models.AddRange(notionModels);
                 models.Add("custom");
                 break;
             case "openai-compatible":
@@ -984,6 +1000,55 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             : string.Empty;
 
         IsSettingsVisible = true;
+        if (IsNotionRunning)
+        {
+            await RefreshNotionModelsAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async Task RefreshNotionModelsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using HttpRequestMessage request = new(HttpMethod.Get, $"http://127.0.0.1:{NotionProxyPort}/v1/models");
+            if (!string.IsNullOrWhiteSpace(NotionApiMasterKey))
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", NotionApiMasterKey);
+            }
+
+            using HttpResponseMessage response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return;
+            }
+
+            using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+            if (!document.RootElement.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Array)
+            {
+                return;
+            }
+
+            List<string> discovered = data.EnumerateArray()
+                .Select(item => item.TryGetProperty("id", out JsonElement id) ? id.GetString() : null)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (discovered.Count == 0)
+            {
+                return;
+            }
+
+            notionModels = discovered;
+            if (SelectedProviderIndex >= 0 && SelectedProviderIndex < ProviderIds.Count && ProviderIds[SelectedProviderIndex] == "notion")
+            {
+                UpdateAvailableModelsList();
+            }
+        }
+        catch
+        {
+        }
     }
 
     public async Task LoadWindowPreferencesAsync(CancellationToken cancellationToken)
@@ -1190,6 +1255,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         await SaveSecretIfChangedAsync("managed-qwen-cookie", QwenProxyCookie);
         await SaveSecretIfChangedAsync("managed-deepseek-cookie", DeepseekProxyCookie);
         await SaveSecretIfChangedAsync("managed-kimi-cookie", KimiProxyCookie);
+        if (string.IsNullOrWhiteSpace(NotionApiMasterKey) && !string.IsNullOrWhiteSpace(NotionCookie))
+        {
+            NotionApiMasterKey = DeriveNotionApiKey(ExtractToken(NotionCookie));
+        }
+
         await SaveSecretIfChangedAsync("managed-notion-cookie", NotionCookie);
         await SaveSecretIfChangedAsync("managed-notion-space-id", NotionSpaceId);
         await SaveSecretIfChangedAsync("managed-notion-user-id", NotionUserId);
@@ -1253,6 +1323,25 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             // UI toggle still applies for this session even if persistence fails.
         }
+    }
+
+    private static string ExtractToken(string cookie)
+    {
+        foreach (string part in cookie.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (part.StartsWith("token_v2=", StringComparison.OrdinalIgnoreCase))
+            {
+                return Uri.UnescapeDataString(part[8..]);
+            }
+        }
+
+        return cookie.Trim();
+    }
+
+    private static string DeriveNotionApiKey(string token)
+    {
+        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(token));
+        return "sm-notion-" + Convert.ToHexString(digest)[..32].ToLowerInvariant();
     }
 
     private async Task SaveSecretIfChangedAsync(string keyName, string value)
@@ -1382,6 +1471,10 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 IsNotionRunning = await proxyManager.IsRunningAsync("notion-2api", CancellationToken.None);
                 NotionStatus = $"Installed, {(IsNotionRunning ? "Running" : "Stopped")}";
                 await SaveSettingsStateAsync();
+                if (IsNotionRunning)
+                {
+                    await RefreshNotionModelsAsync(CancellationToken.None).ConfigureAwait(false);
+                }
             }
         }
         catch (Exception ex)

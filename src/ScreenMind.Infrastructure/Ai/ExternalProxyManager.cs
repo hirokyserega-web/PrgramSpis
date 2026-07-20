@@ -5,7 +5,10 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -17,6 +20,7 @@ namespace ScreenMind.Infrastructure.Ai;
 public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
 {
     private const string PackageJsonFileName = "package.json";
+    private static readonly JsonSerializerOptions AccountJsonOptions = new() { WriteIndented = true };
 
     private readonly ConcurrentDictionary<string, Process> activeProcesses = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<string>> proxyLogs = new(StringComparer.OrdinalIgnoreCase);
@@ -91,7 +95,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
     {
         if (proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase))
         {
-            return "https://github.com/lza6/notion-2api.git";
+            return "https://github.com/SleepingBag945/notion_manager.git";
         }
 
         return $"https://github.com/ForgetMeAI/{proxyName}.git";
@@ -113,9 +117,19 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "proxies");
         Directory.CreateDirectory(parentDir);
 
+        if (proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase))
+        {
+            Directory.CreateDirectory(dir);
+            await InstallNotionProxyAsync(dir, cancellationToken).ConfigureAwait(false);
+            if (!IsInstalledDirectory(dir))
+            {
+                throw new InvalidOperationException($"Proxy {proxyName} was installed, but notion-manager.exe was not found.");
+            }
+            return;
+        }
+
         if (!Directory.Exists(dir))
         {
-            // Clone the repository
             ProcessStartInfo gitPsi = new()
             {
                 FileName = "git",
@@ -137,16 +151,6 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             {
                 throw new InvalidOperationException("Failed to start git process. Ensure git is installed.");
             }
-        }
-
-        if (proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase))
-        {
-            await InstallNotionProxyAsync(dir, cancellationToken).ConfigureAwait(false);
-            if (!IsInstalledDirectory(dir))
-            {
-                throw new InvalidOperationException($"Proxy {proxyName} was installed, but its Python environment was not found.");
-            }
-            return;
         }
 
         // Run npm install
@@ -311,11 +315,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         {
             string envPath = Path.Combine(dir, ".env");
             List<string> envLines = [$"PORT={port}"];
-            if (!string.IsNullOrWhiteSpace(credentials.Cookie))
-            {
-                envLines.Add($"COOKIE={credentials.Cookie}");
-                envLines.Add($"SESSION_TOKEN={credentials.Cookie}");
-            }
+
 
             File.WriteAllLines(envPath, envLines);
         }
@@ -327,16 +327,16 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         ProcessStartInfo psi;
         if (proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase))
         {
-            string pythonPath = Path.Combine(dir, ".venv", "Scripts", "python.exe");
-            if (!File.Exists(pythonPath))
+            string notionManagerPath = Path.Combine(dir, OperatingSystem.IsWindows() ? "notion-manager.exe" : "notion-manager");
+            if (!File.Exists(notionManagerPath))
             {
-                throw new InvalidOperationException("Notion proxy Python environment is not installed. Click Install first.");
+                throw new InvalidOperationException("Notion manager is not installed. Click Install first.");
             }
 
             psi = new ProcessStartInfo
             {
-                FileName = pythonPath,
-                Arguments = $"-m uvicorn main:app --host 127.0.0.1 --port {port}",
+                FileName = notionManagerPath,
+                Arguments = string.Empty,
                 WorkingDirectory = dir,
                 CreateNoWindow = true,
                 UseShellExecute = false,
@@ -378,14 +378,23 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         }
         else if (proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase))
         {
-            SetEnvironmentVariableIfPresent(psi, "API_MASTER_KEY", credentials.ApiMasterKey);
-            SetEnvironmentVariableIfPresent(psi, "NOTION_COOKIE", credentials.Cookie);
-            SetEnvironmentVariableIfPresent(psi, "NOTION_SPACE_ID", credentials.SpaceId);
-            SetEnvironmentVariableIfPresent(psi, "NOTION_USER_ID", credentials.UserId);
-            SetEnvironmentVariableIfPresent(psi, "NOTION_USER_NAME", credentials.UserName);
-            SetEnvironmentVariableIfPresent(psi, "NOTION_USER_EMAIL", credentials.UserEmail);
-            SetEnvironmentVariableIfPresent(psi, "NOTION_BLOCK_ID", credentials.BlockId);
-            psi.EnvironmentVariables["NGINX_PORT"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            string token = ExtractToken(credentials.Cookie);
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                throw new InvalidOperationException("Notion token_v2 is required.");
+            }
+
+            await PrepareNotionAccountAsync(dir, token, cancellationToken).ConfigureAwait(false);
+            string apiKey = string.IsNullOrWhiteSpace(credentials.ApiMasterKey)
+                ? DeriveNotionApiKey(token)
+                : credentials.ApiMasterKey;
+            SetEnvironmentVariableIfPresent(psi, "API_KEY", apiKey);
+            SetEnvironmentVariableIfPresent(psi, "NOTION_TOKEN_V2", token);
+            psi.EnvironmentVariables["ACCOUNTS_DIR"] = Path.Combine(dir, "accounts");
+            psi.EnvironmentVariables["TOKEN_FILE"] = Path.Combine(dir, "token.txt");
+            psi.EnvironmentVariables["PORT"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            Directory.CreateDirectory(Path.Combine(dir, "accounts"));
+            File.WriteAllText(Path.Combine(dir, "token.txt"), token);
         }
 
 
@@ -475,6 +484,16 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             }
             throw new InvalidOperationException($"{proxyName} health check failed.");
         }
+    }
+
+    private static string ExtractToken(string cookie)
+    {
+        if (string.IsNullOrWhiteSpace(cookie)) return string.Empty;
+        foreach (string part in cookie.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (part.StartsWith("token_v2=", StringComparison.OrdinalIgnoreCase)) return Uri.UnescapeDataString(part[8..]);
+        }
+        return cookie.Trim();
     }
 
     private static void SetEnvironmentVariableIfPresent(ProcessStartInfo processStartInfo, string name, string? value)
@@ -964,6 +983,13 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             return File.Exists(Path.Combine(dir, ".venv", "Scripts", "python.exe"));
         }
 
+        if (File.Exists(Path.Combine(dir, "go.mod"))
+            && Directory.Exists(Path.Combine(dir, "cmd", "notion-manager")))
+        {
+            return File.Exists(Path.Combine(dir, "notion-manager.exe"))
+                || File.Exists(Path.Combine(dir, "notion-manager"));
+        }
+
         string packagePath = Path.Combine(dir, PackageJsonFileName);
         if (!File.Exists(packagePath))
         {
@@ -976,59 +1002,63 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
 
     private static async Task InstallNotionProxyAsync(string dir, CancellationToken cancellationToken)
     {
-        string pythonExecutable = ResolvePythonExecutable();
-        if (string.IsNullOrWhiteSpace(pythonExecutable))
+        string binaryPath = Path.Combine(dir, OperatingSystem.IsWindows() ? "notion-manager.exe" : "notion-manager");
+        if (File.Exists(binaryPath))
         {
-            throw new InvalidOperationException("Python is required to install notion-2api.");
+            return;
         }
 
-        string venvPath = Path.Combine(dir, ".venv");
-        if (!Directory.Exists(venvPath))
+        string assetUrl = OperatingSystem.IsWindows()
+            ? "https://github.com/SleepingBag945/notion_manager/releases/download/v1.0.2/notion-manager-windows-amd64.exe"
+            : "https://github.com/SleepingBag945/notion_manager/releases/download/v1.0.2/notion-manager-linux-amd64";
+        using HttpClient client = new();
+        using HttpResponseMessage response = await client.GetAsync(assetUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        await using Stream source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        await using FileStream target = File.Create(binaryPath);
+        await source.CopyToAsync(target, cancellationToken).ConfigureAwait(false);
+        if (!OperatingSystem.IsWindows())
         {
-            ProcessStartInfo venvPsi = new()
+            try
             {
-                FileName = pythonExecutable,
-                Arguments = $"-m venv .venv",
-                WorkingDirectory = dir,
-                CreateNoWindow = true,
-                UseShellExecute = false
-            };
-            using Process? venvProcess = Process.Start(venvPsi);
-            if (venvProcess is not null)
+                File.SetUnixFileMode(binaryPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+            catch
             {
-                await venvProcess.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-                if (venvProcess.ExitCode != 0)
+            }
+        }
+        if (!File.Exists(binaryPath) || new FileInfo(binaryPath).Length == 0)
+        {
+            throw new InvalidOperationException("Failed to download notion-manager binary.");
+        }
+    }
+
+    private static string ResolveGoExecutable()
+    {
+        string? path = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            foreach (string entry in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                string candidate = Path.Combine(entry, OperatingSystem.IsWindows() ? "go.exe" : "go");
+                if (File.Exists(candidate))
                 {
-                    throw new InvalidOperationException($"Failed to create virtual environment. Exit code: {venvProcess.ExitCode}");
+                    return candidate;
                 }
             }
-            else
-            {
-                throw new InvalidOperationException("Failed to start python process. Ensure python is installed.");
-            }
         }
 
-        ProcessStartInfo installPsi = new()
-        {
-            FileName = Path.Combine(venvPath, "Scripts", "python.exe"),
-            Arguments = "-m pip install -r requirements.txt",
-            WorkingDirectory = dir,
-            CreateNoWindow = true,
-            UseShellExecute = false
-        };
-        using Process? installProcess = Process.Start(installPsi);
-        if (installProcess is not null)
-        {
-            await installProcess.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            if (installProcess.ExitCode != 0)
-            {
-                throw new InvalidOperationException($"Failed to install requirements. Exit code: {installProcess.ExitCode}");
-            }
-        }
-        else
-        {
-            throw new InvalidOperationException("Failed to start python process. Ensure python is installed.");
-        }
+        string[] candidates = OperatingSystem.IsWindows()
+            ? [Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Go", "bin", "go.exe"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Go", "bin", "go.exe")]
+            : ["/usr/local/go/bin/go", "/usr/bin/go"];
+        return candidates.FirstOrDefault(File.Exists) ?? string.Empty;
+    }
+
+    private static string TruncateProcessOutput(string stderr, string stdout)
+    {
+        string text = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+        text = text.Trim();
+        return text.Length <= 800 ? text : text[^800..];
     }
 
     private static bool PackageHasDependencies(string packagePath)
@@ -1250,5 +1280,139 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             }
         }
         activeProcesses.Clear();
+    }
+
+    private static string DeriveNotionApiKey(string token)
+    {
+        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(token));
+        return "sm-notion-" + Convert.ToHexString(digest)[..32].ToLowerInvariant();
+    }
+
+    private static async Task PrepareNotionAccountAsync(string dir, string token, CancellationToken cancellationToken)
+    {
+        string accountsDir = Path.Combine(dir, "accounts");
+        Directory.CreateDirectory(accountsDir);
+        string accountPath = Path.Combine(accountsDir, "screenmind-notion.json");
+
+        using HttpClient client = new() { Timeout = TimeSpan.FromSeconds(30) };
+        using HttpRequestMessage request = new(HttpMethod.Post, "https://www.notion.so/api/v3/loadUserContent");
+        request.Headers.TryAddWithoutValidation("Cookie", "token_v2=" + token);
+        request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/146 Safari/537.36");
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+
+        using HttpResponseMessage response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Notion account discovery failed ({(int)response.StatusCode}): {TruncateProcessOutput(body, string.Empty)}");
+        }
+
+        using JsonDocument document = JsonDocument.Parse(body);
+        JsonElement recordMap = document.RootElement.TryGetProperty("recordMap", out JsonElement map)
+            ? map
+            : throw new InvalidOperationException("Notion account discovery returned no recordMap.");
+
+        JsonElement users = GetProperty(recordMap, "notion_user");
+        JsonProperty? userProperty = users.ValueKind == JsonValueKind.Object
+            ? users.EnumerateObject().Cast<JsonProperty?>().FirstOrDefault()
+            : null;
+        if (userProperty is null)
+        {
+            throw new InvalidOperationException("Notion account discovery returned no user.");
+        }
+
+        string userId = userProperty.Value.Name;
+        string userName = FindString(userProperty.Value.Value, "name") ?? "Notion user";
+        string userEmail = FindString(userProperty.Value.Value, "email") ?? string.Empty;
+        JsonElement roots = GetProperty(recordMap, "user_root");
+        JsonElement root = GetProperty(roots, userId);
+        JsonElement pointers = FindArray(root, "space_view_pointers");
+        JsonElement spaces = GetProperty(recordMap, "space");
+        JsonElement chosenSpace = default;
+        string spaceId = string.Empty;
+        string spaceViewId = string.Empty;
+
+        if (pointers.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("Notion account discovery returned no workspace pointers.");
+        }
+
+        foreach (JsonElement pointer in pointers.EnumerateArray())
+        {
+            string candidateId = FindString(pointer, "spaceId") ?? FindString(pointer, "space_id") ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(candidateId)) continue;
+            JsonElement candidate = GetProperty(spaces, candidateId);
+            if (candidate.ValueKind == JsonValueKind.Undefined) continue;
+            spaceId = candidateId;
+            spaceViewId = FindString(pointer, "id") ?? string.Empty;
+            chosenSpace = candidate;
+            break;
+        }
+
+        if (string.IsNullOrWhiteSpace(spaceId))
+        {
+            throw new InvalidOperationException("Notion account discovery found no workspace for this token.");
+        }
+
+        string spaceName = FindString(chosenSpace, "name") ?? "Notion workspace";
+        string planType = FindString(chosenSpace, "plan_type") ?? "free";
+        Dictionary<string, object> account = new()
+        {
+            ["token_v2"] = token,
+            ["user_id"] = userId,
+            ["user_name"] = userName,
+            ["user_email"] = userEmail,
+            ["space_id"] = spaceId,
+            ["space_name"] = spaceName,
+            ["space_view_id"] = spaceViewId,
+            ["plan_type"] = planType,
+            ["timezone"] = "UTC",
+            ["client_version"] = "23.13.20260313.1423",
+            ["browser_id"] = Guid.NewGuid().ToString(),
+            ["device_id"] = Guid.NewGuid().ToString(),
+        };
+        await File.WriteAllTextAsync(accountPath, JsonSerializer.Serialize(account, AccountJsonOptions), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static JsonElement GetProperty(JsonElement element, string name)
+    {
+        return element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out JsonElement value)
+            ? value
+            : default;
+    }
+
+    private static JsonElement FindArray(JsonElement element, string name)
+    {
+        if (element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out JsonElement direct) && direct.ValueKind == JsonValueKind.Array)
+        {
+            return direct;
+        }
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty property in element.EnumerateObject())
+            {
+                JsonElement nested = FindArray(property.Value, name);
+                if (nested.ValueKind == JsonValueKind.Array) return nested;
+            }
+        }
+        return default;
+    }
+
+    private static string? FindString(JsonElement element, string name)
+    {
+        if (element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out JsonElement direct) && direct.ValueKind == JsonValueKind.String)
+        {
+            return direct.GetString();
+        }
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty property in element.EnumerateObject())
+            {
+                string? nested = FindString(property.Value, name);
+                if (!string.IsNullOrWhiteSpace(nested)) return nested;
+            }
+        }
+        return null;
     }
 }

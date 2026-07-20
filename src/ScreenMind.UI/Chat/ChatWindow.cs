@@ -1023,17 +1023,17 @@ public sealed class ChatWindow : Window, IDisposable
         kimiStatusGrid.Children.Add(kimiStopBtn); Grid.SetColumn(kimiStopBtn, 2);
         scrollPanel.Children.Add(kimiStatusGrid);
 
-        scrollPanel.Children.Add(new TextBlock { Text = "notion-2api (Notion AI)", Foreground = Brushes.White, FontWeight = FontWeight.Bold, FontSize = 12 });
+        scrollPanel.Children.Add(new TextBlock { Text = "notion-manager (Notion AI + images)", Foreground = Brushes.White, FontWeight = FontWeight.Bold, FontSize = 12 });
         notionProxyCheck = new CheckBox { Content = "Enable Notion AI Background Proxy", Foreground = Brushes.White };
         scrollPanel.Children.Add(notionProxyCheck);
         notionProxyPortInput = new TextBox { Watermark = "Port: 8088", Margin = new Thickness(0, 2, 0, 4) };
-        notionCookieInput = new TextBox { PasswordChar = '*', Watermark = "token_v2 or full Cookie", Margin = new Thickness(0, 2, 0, 4) };
-        notionSpaceIdInput = new TextBox { Watermark = "Notion Space ID", Margin = new Thickness(0, 2, 0, 4) };
-        notionUserIdInput = new TextBox { Watermark = "Notion User ID", Margin = new Thickness(0, 2, 0, 4) };
-        notionUserNameInput = new TextBox { Watermark = "Notion User Name (optional)", Margin = new Thickness(0, 2, 0, 4) };
-        notionUserEmailInput = new TextBox { Watermark = "Notion User Email (optional)", Margin = new Thickness(0, 2, 0, 4) };
-        notionBlockIdInput = new TextBox { Watermark = "Block ID (optional)", Margin = new Thickness(0, 2, 0, 4) };
-        notionApiMasterKeyInput = new TextBox { PasswordChar = '*', Watermark = "API Master Key (optional)", Margin = new Thickness(0, 2, 0, 4) };
+        notionCookieInput = new TextBox { PasswordChar = '*', Watermark = "token_v2 или полный Cookie Notion", Margin = new Thickness(0, 2, 0, 4) };
+        notionSpaceIdInput = new TextBox { IsVisible = false, Watermark = "Notion Space ID", Margin = new Thickness(0, 2, 0, 4) };
+        notionUserIdInput = new TextBox { IsVisible = false, Watermark = "Notion User ID", Margin = new Thickness(0, 2, 0, 4) };
+        notionUserNameInput = new TextBox { IsVisible = false, Watermark = "Notion User Name (optional)", Margin = new Thickness(0, 2, 0, 4) };
+        notionUserEmailInput = new TextBox { IsVisible = false, Watermark = "Notion User Email (optional)", Margin = new Thickness(0, 2, 0, 4) };
+        notionBlockIdInput = new TextBox { IsVisible = false, Watermark = "Block ID (optional)", Margin = new Thickness(0, 2, 0, 4) };
+        notionApiMasterKeyInput = new TextBox { PasswordChar = '*', Watermark = "Ключ API прокси (необязательно)", Margin = new Thickness(0, 2, 0, 4) };
         scrollPanel.Children.Add(notionProxyPortInput);
         scrollPanel.Children.Add(notionCookieInput);
         scrollPanel.Children.Add(notionSpaceIdInput);
