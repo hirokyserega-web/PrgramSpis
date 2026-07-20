@@ -402,9 +402,22 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 models.Add("custom");
                 break;
             case "qwen":
-                models.Add("qwen3.7");
-                models.Add("qwen3.7-max");
                 models.Add("qwen3.8-max-preview");
+                models.Add("qwen3.7-max");
+                models.Add("qwen3.7-plus");
+                models.Add("qwen3.6-plus");
+                models.Add("qwen3.5-plus");
+                models.Add("qwen3.5-flash");
+                models.Add("qwen3-max");
+                models.Add("qwen3-vl-plus");
+                models.Add("qwen3-coder-plus");
+                models.Add("qwen3-omni-flash");
+                models.Add("qwen3-235b-a22b");
+                models.Add("qwq-32b");
+                models.Add("qvq-72b-preview-0310");
+                models.Add("qwen2.5-vl-32b-instruct");
+                models.Add("qwen2.5-coder-32b-instruct");
+                models.Add("qwen2.5-72b-instruct");
                 models.Add("custom");
                 break;
             case "deepseek":
@@ -435,7 +448,13 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             int provIdx = 0;
             if (profile.ProviderId == "openai-compatible")
             {
-                if (profile.ModelId.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)) provIdx = 4;
+                if (profile.ModelId.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)
+                    || profile.ModelId.StartsWith("qwq", StringComparison.OrdinalIgnoreCase)
+                    || profile.ModelId.StartsWith("qvq", StringComparison.OrdinalIgnoreCase)
+                    || profile.Id.StartsWith("qwen", StringComparison.OrdinalIgnoreCase))
+                {
+                    provIdx = 4;
+                }
                 else if (profile.ModelId.StartsWith("deepseek", StringComparison.OrdinalIgnoreCase)) provIdx = 5;
                 else if (profile.ModelId.StartsWith("kimi", StringComparison.OrdinalIgnoreCase) || profile.ModelId.StartsWith("glm", StringComparison.OrdinalIgnoreCase)) provIdx = 6;
                 else provIdx = 7;
@@ -526,6 +545,12 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             AiProfile newProfile = oldProfile with { ProviderId = providerId, ModelId = modelId };
             AvailableProfiles[SelectedProfileIndex] = newProfile;
 
+            // Update the active session's profile if it matches the one being edited
+            if (ActiveSession is not null && ActiveSession.Profile.Id == oldProfile.Id)
+            {
+                ActiveSession.Profile = newProfile;
+            }
+
             // Re-create the profile names list to update display
             ProfileNames = AvailableProfiles.Select(p => p.DisplayName).ToList();
             OnPropertyChanged(nameof(ProfileNames));
@@ -585,10 +610,19 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         // Auto-create a session if none exists
         if (ActiveSession is null)
         {
-            ScreenMindSettings settings = await settingsStore.LoadAsync(CancellationToken.None);
-            AiProfile profile = settings.Profiles.Items.FirstOrDefault(p => p.Id == settings.Profiles.SelectedProfileId)
-                ?? settings.Profiles.Items.FirstOrDefault()
-                ?? new AiProfile("universal", "Universal", "openai", "gpt-4o-mini", "Analyze the screenshot and answer clearly.");
+            // Prefer the currently selected profile from UI, fall back to saved settings
+            AiProfile profile;
+            if (SelectedProfileIndex >= 0 && SelectedProfileIndex < AvailableProfiles.Count)
+            {
+                profile = AvailableProfiles[SelectedProfileIndex];
+            }
+            else
+            {
+                ScreenMindSettings settings = await settingsStore.LoadAsync(CancellationToken.None);
+                profile = settings.Profiles.Items.FirstOrDefault(p => p.Id == settings.Profiles.SelectedProfileId)
+                    ?? settings.Profiles.Items.FirstOrDefault()
+                    ?? new AiProfile("universal", "Universal", "openai", "gpt-4o-mini", "Analyze the screenshot and answer clearly.");
+            }
 
             ChatSession createdSession = sessionManager.CreateSession(profile, null);
             Sessions.Add(createdSession);
@@ -656,7 +690,14 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 session.Messages.Take(session.Messages.Count - 2).ToArray(),
                 session.ConversationState);
 
-            StreamingAnswerFilter answerFilter = new(suppressUntaggedReasoning: false);
+            bool isQwen = providerId.Equals("qwen", StringComparison.OrdinalIgnoreCase)
+                || (providerId.Equals("openai-compatible", StringComparison.OrdinalIgnoreCase)
+                    && (session.Profile.ModelId.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)
+                        || session.Profile.ModelId.StartsWith("qwq", StringComparison.OrdinalIgnoreCase)
+                        || session.Profile.ModelId.StartsWith("qvq", StringComparison.OrdinalIgnoreCase)
+                        || session.Profile.Id.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)));
+
+            StreamingAnswerFilter answerFilter = new(suppressUntaggedReasoning: isQwen);
             StringBuilder visibleAnswer = new();
             DateTimeOffset lastUiUpdate = DateTimeOffset.MinValue;
             int assistantIndex = session.Messages.Count - 1;
@@ -737,7 +778,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
 
             if (answerFilter.IsReasoningOnly && visibleAnswer.Length == 0)
             {
-                visibleAnswer.Append("Модель завершила ответ без отдельного итогового текста.");
+                visibleAnswer.Append("Ответ ИИ был прерван. Возможно, веб-поиск занял слишком много времени или локальное прокси-соединение было сброшено. Пожалуйста, повторите попытку.");
             }
 
             PublishAssistantMessage(force: true);
@@ -1305,6 +1346,21 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
+    public async Task FixQwenProxyModelsAsync()
+    {
+        try
+        {
+            await proxyManager.FixQwenProxyModelsAsync(CancellationToken.None);
+            QwenStatus = "Model list fixed successfully! Restart the proxy.";
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = $"Failed to fix models: {ex.Message}";
+            QwenStatus = $"Error: {ex.Message}";
+        }
+    }
+
+    [RelayCommand]
     public void ApprovePrivacyWarning()
     {
         IsPrivacyWarningActive = false;
@@ -1358,7 +1414,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         IsSending = false;
     }
 
-    public async Task AnalyzeImageSilentlyAsync(ScreenImage image)
+    public async Task AnalyzeImageSilentlyAsync(ScreenImage image, string? promptOverride = null)
     {
         CancelActiveRequest();
         try
@@ -1377,9 +1433,11 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 await CreateSessionFromImageAsync(image, CancellationToken.None);
             }
 
-            string prompt = !string.IsNullOrWhiteSpace(settings.Capture.DefaultPrompt)
-                ? settings.Capture.DefaultPrompt
-                : "What is on my screen?";
+            string prompt = !string.IsNullOrWhiteSpace(promptOverride)
+                ? promptOverride
+                : (!string.IsNullOrWhiteSpace(settings.Capture.DefaultPrompt)
+                    ? settings.Capture.DefaultPrompt
+                    : "What is on my screen?");
 
             InputText = prompt;
             await SendMessageAsync(image);

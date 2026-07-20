@@ -26,7 +26,7 @@ public interface IChatWindowService
     /// <summary>
     /// Starts image analysis without activating the chat window or changing the foreground app.
     /// </summary>
-    void AnalyzeImage(ScreenImage image);
+    void AnalyzeImage(ScreenImage image, string? promptOverride = null);
 
     void SetDefaultPrompt(string promptText);
 }

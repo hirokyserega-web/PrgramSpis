@@ -14,16 +14,34 @@ public sealed class StreamingAnswerFilter
     private string? activeTag;
     private bool completed;
 
+    private readonly bool suppressUntaggedReasoning;
+    private readonly StringBuilder untaggedBuffer = new();
+    private bool markerFound;
+
+    private static readonly string[] FinalMarkers = [
+        "Final Answer:",
+        "Final:",
+        "Окончательный ответ:",
+        "Выполнил поиск в интернете",
+        "Поиск в интернете",
+        "Источники прочитаны",
+        "Просмотрено страниц:",
+        "Выполнен поиск",
+        "Поиск по сайтам:",
+        "Получено ответов:",
+        "Ответ:"
+    ];
+
     public StreamingAnswerFilter(bool suppressUntaggedReasoning = false)
     {
-        _ = suppressUntaggedReasoning;
+        this.suppressUntaggedReasoning = suppressUntaggedReasoning;
     }
 
     public string RawText => rawText.ToString();
     public string AnswerText => answerText.ToString();
     public bool HasExplicitAnswer => answerText.Length > 0;
-    public bool HasUnresolvedReasoning => completed && answerText.Length < 0;
-    public bool IsReasoningOnly => completed && answerText.Length < 0;
+    public bool HasUnresolvedReasoning => completed && answerText.Length == 0;
+    public bool IsReasoningOnly => completed && answerText.Length == 0;
 
     public string Push(string chunk)
     {
@@ -34,7 +52,9 @@ public sealed class StreamingAnswerFilter
 
         rawText.Append(chunk);
         pending.Append(chunk);
-        return Drain(final: false);
+        
+        string xmlDrained = DrainXmlTags(final: false);
+        return ProcessUntagged(xmlDrained, final: false);
     }
 
     public string Complete()
@@ -44,12 +64,77 @@ public sealed class StreamingAnswerFilter
             return string.Empty;
         }
 
-        string visible = Drain(final: true);
+        string xmlDrained = DrainXmlTags(final: true);
+        string visible = ProcessUntagged(xmlDrained, final: true);
         completed = true;
         return visible;
     }
 
-    private string Drain(bool final)
+    private string ProcessUntagged(string text, bool final)
+    {
+        if (!suppressUntaggedReasoning)
+        {
+            answerText.Append(text);
+            return text;
+        }
+
+        if (markerFound)
+        {
+            answerText.Append(text);
+            return text;
+        }
+
+        untaggedBuffer.Append(text);
+        string bufferText = untaggedBuffer.ToString();
+
+        foreach (string marker in FinalMarkers)
+        {
+            int index = bufferText.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (index >= 0)
+            {
+                markerFound = true;
+                string remaining = bufferText[(index + marker.Length)..].TrimStart('\r', '\n', ' ');
+                untaggedBuffer.Clear();
+                answerText.Append(remaining);
+                return remaining;
+            }
+        }
+
+        int russianLineStart = FindRussianLineStart(bufferText);
+        if (russianLineStart >= 0)
+        {
+            markerFound = true;
+            string remaining = bufferText[russianLineStart..].TrimStart('\r', '\n', ' ');
+            untaggedBuffer.Clear();
+            answerText.Append(remaining);
+            return remaining;
+        }
+
+        if (final)
+        {
+            string remaining = untaggedBuffer.ToString();
+            untaggedBuffer.Clear();
+
+            // If the buffer is short (under 60 chars), it's a short answer (e.g. number or code), not long reasoning.
+            if (remaining.Length < 60)
+            {
+                answerText.Append(remaining);
+                return remaining;
+            }
+
+            if (FindRussianLineStart(remaining) < 0)
+            {
+                return string.Empty;
+            }
+
+            answerText.Append(remaining);
+            return remaining;
+        }
+
+        return string.Empty;
+    }
+
+    private string DrainXmlTags(bool final)
     {
         StringBuilder visible = new();
         while (true)
@@ -128,9 +213,7 @@ public sealed class StreamingAnswerFilter
             break;
         }
 
-        string result = visible.ToString();
-        answerText.Append(result);
-        return result;
+        return visible.ToString();
     }
 
     private static int FindOpening(StringBuilder value, out string? tag, out int length)
@@ -185,5 +268,34 @@ public sealed class StreamingAnswerFilter
             }
         }
         return best;
+    }
+
+    private static int FindRussianLineStart(string text)
+    {
+        int lineStart = 0;
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] == '\n' || i == text.Length - 1)
+            {
+                int lineEnd = (text[i] == '\n') ? i : i + 1;
+                string line = text[lineStart..lineEnd];
+
+                int cyrillicCount = 0;
+                int latinCount = 0;
+                foreach (char c in line)
+                {
+                    if (c >= '\u0400' && c <= '\u04FF') cyrillicCount++;
+                    else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) latinCount++;
+                }
+
+                if (cyrillicCount >= 5 && cyrillicCount > latinCount)
+                {
+                    return lineStart;
+                }
+
+                lineStart = i + 1;
+            }
+        }
+        return -1;
     }
 }

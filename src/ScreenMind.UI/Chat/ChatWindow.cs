@@ -189,7 +189,7 @@ public sealed class ChatWindow : Window, IDisposable
         ExtendClientAreaChromeHints = Avalonia.Platform.ExtendClientAreaChromeHints.NoChrome;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         CanResize = true;
-        ShowInTaskbar = true;
+        ShowInTaskbar = false;
         Width = 960;
         Height = 650;
         MinWidth = 350;
@@ -907,7 +907,7 @@ public sealed class ChatWindow : Window, IDisposable
         SolidColorBrush greenBrush = new SolidColorBrush(Color.Parse("#22C55E"));
         SolidColorBrush redBrush = new SolidColorBrush(Color.Parse("#EF4444"));
 
-        Grid qwenStatusGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"), Margin = new Thickness(0, 2, 0, 8) };
+        Grid qwenStatusGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto"), Margin = new Thickness(0, 2, 0, 8) };
         qwenStatusText = new TextBlock { Foreground = TextMutedBrush(), FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
         qwenStartBtn = CreateButton("Start", greenBrush, Brushes.White);
         qwenStartBtn.Margin = new Thickness(0, 0, 4, 0);
@@ -917,13 +917,18 @@ public sealed class ChatWindow : Window, IDisposable
             await viewModel.StartProxyManualAsync("FreeQwenApi");
         };
         qwenStopBtn = CreateButton("Stop", redBrush, Brushes.White);
+        qwenStopBtn.Margin = new Thickness(0, 0, 4, 0);
         qwenStopBtn.Click += async (s, e) =>
         {
             await viewModel.StopProxyManualAsync("FreeQwenApi");
         };
+        Button qwenFixBtn = CreateButton("Fix 3.8", new SolidColorBrush(Color.Parse("#F97316")), Brushes.White);
+        qwenFixBtn.Click += async (s, e) => await viewModel.FixQwenProxyModelsAsync();
+
         qwenStatusGrid.Children.Add(qwenStatusText); Grid.SetColumn(qwenStatusText, 0);
         qwenStatusGrid.Children.Add(qwenStartBtn); Grid.SetColumn(qwenStartBtn, 1);
         qwenStatusGrid.Children.Add(qwenStopBtn); Grid.SetColumn(qwenStopBtn, 2);
+        qwenStatusGrid.Children.Add(qwenFixBtn); Grid.SetColumn(qwenFixBtn, 3);
         scrollPanel.Children.Add(qwenStatusGrid);
 
         // Deepseek Proxy

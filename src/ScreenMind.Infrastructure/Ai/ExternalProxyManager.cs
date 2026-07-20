@@ -242,6 +242,12 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             throw new InvalidOperationException($"Proxy {proxyName} is not installed.");
         }
 
+        // Ensure FreeQwenApi maps qwen3.8 as a real model, not an alias of 3.7-max.
+        if (proxyName.Equals("FreeQwenApi", StringComparison.OrdinalIgnoreCase))
+        {
+            await FixQwenProxyModelsAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         // Check if port is already open
         if (await IsPortOpenAsync(port, cancellationToken).ConfigureAwait(false))
         {
@@ -526,6 +532,184 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             }
         }
         return Task.CompletedTask;
+    }
+
+    public async Task FixQwenProxyModelsAsync(CancellationToken cancellationToken)
+    {
+        const string modelId = "qwen3.8-max-preview";
+        string[] modelAliases =
+        [
+            "Qwen3.8-Max-Preview",
+            "qwen-3.8-max-preview",
+            "qwen38-max-preview",
+            "qwen38-max",
+            "qwen3.8-max",
+            "qwen3.8",
+        ];
+
+        string dir = GetProxyDirectory("FreeQwenApi");
+        string modelsFile = Path.Combine(dir, "src", "AvailableModels.txt");
+        string mappingFile = Path.Combine(dir, "src", "api", "modelMapping.js");
+        string chatFile = Path.Combine(dir, "src", "api", "chat.js");
+
+        if (File.Exists(modelsFile))
+        {
+            string modelsContent = await File.ReadAllTextAsync(modelsFile, cancellationToken).ConfigureAwait(false);
+            if (!modelsContent.Contains(modelId, StringComparison.OrdinalIgnoreCase))
+            {
+                string lineEnding = modelsContent.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+                string updatedModels = modelsContent.TrimEnd() + lineEnding + modelId + lineEnding;
+                await File.WriteAllTextAsync(modelsFile, updatedModels, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        if (!File.Exists(mappingFile))
+        {
+            await FixQwen38MaxPreviewPayloadAsync(chatFile, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        string content = await File.ReadAllTextAsync(mappingFile, cancellationToken).ConfigureAwait(false);
+        string original = content;
+        string nl = content.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        string escapedModelId = Regex.Escape(modelId);
+
+        bool isCanonical = Regex.IsMatch(
+            content,
+            @"CANONICAL_MODELS\s*=\s*Object\.freeze\(\[[\s\S]*?""" + escapedModelId + @"""",
+            RegexOptions.IgnoreCase);
+
+        // Broken upstream layout: 3.8 listed under another model's aliases (usually 3.7-max).
+        bool isAliasOfOtherModel = Regex.IsMatch(
+            content,
+            @"""qwen3\.7-max""\s*:\s*\[[\s\S]*?""" + escapedModelId + @"""",
+            RegexOptions.IgnoreCase);
+
+        bool hasOwnAliasGroup = Regex.IsMatch(
+            content,
+            @"ALIAS_GROUPS\s*=\s*Object\.freeze\(\{[\s\S]*?""" + escapedModelId + @"""\s*:",
+            RegexOptions.IgnoreCase);
+
+        if (isCanonical && hasOwnAliasGroup && !isAliasOfOtherModel)
+        {
+            await FixQwen38MaxPreviewPayloadAsync(chatFile, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (isAliasOfOtherModel || !isCanonical)
+        {
+            // Remove 3.8 ids that appear as plain array items (aliases / canonical rows).
+            // Group keys like "qwen3.8-max-preview": [ keep the colon and are left intact.
+            content = Regex.Replace(
+                content,
+                @"^[ \t]*""(?:qwen3\.8-max-preview|Qwen3\.8-Max-Preview|qwen-3\.8-max-preview|qwen38-max-preview|qwen38-max|qwen3\.8-max|qwen3\.8)"",?[ \t]*\r?\n",
+                string.Empty,
+                RegexOptions.Multiline | RegexOptions.IgnoreCase);
+
+            isCanonical = Regex.IsMatch(
+                content,
+                @"CANONICAL_MODELS\s*=\s*Object\.freeze\(\[[\s\S]*?""" + escapedModelId + @"""",
+                RegexOptions.IgnoreCase);
+
+            hasOwnAliasGroup = Regex.IsMatch(
+                content,
+                @"ALIAS_GROUPS\s*=\s*Object\.freeze\(\{[\s\S]*?""" + escapedModelId + @"""\s*:",
+                RegexOptions.IgnoreCase);
+        }
+
+        if (!isCanonical)
+        {
+            string canonicalStart = "const CANONICAL_MODELS = Object.freeze([";
+            int canonicalIndex = content.IndexOf(canonicalStart, StringComparison.OrdinalIgnoreCase);
+            if (canonicalIndex >= 0)
+            {
+                int insertPos = canonicalIndex + canonicalStart.Length;
+                content = content.Insert(insertPos, $"{nl}    \"{modelId}\",");
+            }
+        }
+
+        if (!hasOwnAliasGroup)
+        {
+            string aliasStart = "const ALIAS_GROUPS = Object.freeze({";
+            int aliasIndex = content.IndexOf(aliasStart, StringComparison.OrdinalIgnoreCase);
+            if (aliasIndex >= 0)
+            {
+                int insertPos = aliasIndex + aliasStart.Length;
+                string aliasLines = string.Join($",{nl}", modelAliases.Select(alias => $"        \"{alias}\""));
+                string insertText = $"{nl}    \"{modelId}\": [{nl}{aliasLines}{nl}    ],";
+                content = content.Insert(insertPos, insertText);
+            }
+        }
+
+        if (!string.Equals(content, original, StringComparison.Ordinal))
+        {
+            await File.WriteAllTextAsync(mappingFile, content, cancellationToken).ConfigureAwait(false);
+        }
+
+        await FixQwen38MaxPreviewPayloadAsync(chatFile, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task FixQwen38MaxPreviewPayloadAsync(string chatFile, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(chatFile))
+        {
+            return;
+        }
+
+        string content = await File.ReadAllTextAsync(chatFile, cancellationToken).ConfigureAwait(false);
+        string original = content;
+        string nl = content.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+
+        if (!content.Contains("function isQwen38MaxPreviewModel", StringComparison.Ordinal))
+        {
+            const string payloadFunction = "function buildPayloadV2(messageContent, model, chatId, parentId, files, systemMessage, tools, toolChoice, chatType = 't2t', size = null) {";
+            int payloadIndex = content.IndexOf(payloadFunction, StringComparison.Ordinal);
+            if (payloadIndex >= 0)
+            {
+                string helper =
+                    "function isQwen38MaxPreviewModel(model) {" + nl +
+                    "    return typeof model === 'string' && model.toLowerCase() === 'qwen3.8-max-preview';" + nl +
+                    "}" + nl + nl;
+                content = content.Insert(payloadIndex, helper);
+            }
+        }
+
+        if (!content.Contains("const qwen38MaxPreview = isQwen38MaxPreviewModel(model);", StringComparison.Ordinal))
+        {
+            content = content.Replace(
+                "    const featureConfig = {" + nl +
+                "        thinking_enabled: isVideo," + nl +
+                "        output_schema: 'phase'" + nl +
+                "    };",
+                "    const qwen38MaxPreview = isQwen38MaxPreviewModel(model);" + nl +
+                "    const featureConfig = {" + nl +
+                "        thinking_enabled: isVideo || qwen38MaxPreview," + nl +
+                "        output_schema: 'phase'" + nl +
+                "    };",
+                StringComparison.Ordinal);
+        }
+
+        content = content.Replace(
+            "    if (isVideo) {" + nl +
+            "        featureConfig.research_mode = 'normal';" + nl +
+            "        featureConfig.auto_thinking = true;" + nl +
+            "        featureConfig.thinking_format = 'summary';" + nl +
+            "        featureConfig.auto_search = true;" + nl +
+            "    }",
+            "    if (isVideo || qwen38MaxPreview) {" + nl +
+            "        featureConfig.research_mode = 'normal';" + nl +
+            "        featureConfig.auto_thinking = true;" + nl +
+            "        featureConfig.thinking_format = 'summary';" + nl +
+            "    }" + nl +
+            "    if (isVideo) {" + nl +
+            "        featureConfig.auto_search = true;" + nl +
+            "    }",
+            StringComparison.Ordinal);
+
+        if (!string.Equals(content, original, StringComparison.Ordinal))
+        {
+            await File.WriteAllTextAsync(chatFile, content, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private void OnProcessExit(object? sender, EventArgs e)

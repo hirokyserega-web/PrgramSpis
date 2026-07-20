@@ -40,6 +40,9 @@ public sealed class AvaloniaCompactOverlayService : ICompactOverlayService
     }
 
     public Task ShowAsync(CaptureTarget target, CancellationToken cancellationToken)
+        => ShowAsync(target, null, cancellationToken);
+
+    public Task ShowAsync(CaptureTarget target, string? promptOverride, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(target);
 
@@ -105,7 +108,7 @@ public sealed class AvaloniaCompactOverlayService : ICompactOverlayService
                 }
 
                 // Analyze in chat without Activate / SetForegroundWindow.
-                chatWindowService.AnalyzeImage(preCaptured);
+                chatWindowService.AnalyzeImage(preCaptured, promptOverride);
                 completion.TrySetResult();
             }
             catch (Exception exception)

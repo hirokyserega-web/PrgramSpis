@@ -378,7 +378,7 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
         });
     }
 
-    public void AnalyzeImage(ScreenImage image)
+    public void AnalyzeImage(ScreenImage image, string? promptOverride = null)
     {
         ArgumentNullException.ThrowIfNull(image);
 
@@ -393,7 +393,7 @@ public sealed class AvaloniaChatWindowService : IChatWindowService, IDisposable
                     throw new InvalidOperationException("Chat window is not available.");
                 }
 
-                await activeWindow.ViewModel.AnalyzeImageSilentlyAsync(image);
+                await activeWindow.ViewModel.AnalyzeImageSilentlyAsync(image, promptOverride);
             }
             catch (Exception exception)
             {

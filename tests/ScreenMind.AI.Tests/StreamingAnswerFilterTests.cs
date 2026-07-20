@@ -42,7 +42,7 @@ public sealed class StreamingAnswerFilterTests
 
         string output = PushAll(filter, "reasoning\nFinal Answer:\nUseful answer");
 
-        output.Should().Be("reasoning\nFinal Answer:\nUseful answer");
+        output.Should().Be("Useful answer");
     }
 
     [Fact]
@@ -52,7 +52,7 @@ public sealed class StreamingAnswerFilterTests
 
         string output = PushAll(filter, "Пользователь просит...\nНужно определить...\nОкончательный ответ:\nНа скриншоте открыт браузер.");
 
-        output.Should().Be("Пользователь просит...\nНужно определить...\nОкончательный ответ:\nНа скриншоте открыт браузер.");
+        output.Should().Be("На скриншоте открыт браузер.");
     }
 
     [Fact]
@@ -62,7 +62,7 @@ public sealed class StreamingAnswerFilterTests
 
         string output = PushAll(filter, "The user asks for analysis.\nWe need to inspect it.\nFinal:\nThe browser is open.");
 
-        output.Should().Be("The user asks for analysis.\nWe need to inspect it.\nFinal:\nThe browser is open.");
+        output.Should().Be("The browser is open.");
     }
 
     [Fact]
@@ -168,6 +168,80 @@ public sealed class StreamingAnswerFilterTests
         StreamingAnswerFilter filter = new();
 
         PushAll(filter, "Пользователь просит полезный ответ.").Should().Be("Пользователь просит полезный ответ.");
+    }
+
+    [Fact]
+    public void QwenThoughtsAndAnswerWithSearch()
+    {
+        StreamingAnswerFilter filter = new(suppressUntaggedReasoning: true);
+
+        string output = PushAll(filter, 
+            "The user is asking me to answer the questions presented in the screenshot. Let me analyze whats shown in the image.",
+            "\nВыполнил поиск в интернете\n",
+            "На скриншоте из модпака FTB StoneBlock 4...");
+
+        output.Should().Be("На скриншоте из модпака FTB StoneBlock 4...");
+    }
+
+    [Fact]
+    public void QwenUnfinishedThoughtsAreSuppressedEvenIfTheyContainCyrillicWords()
+    {
+        StreamingAnswerFilter filter = new(suppressUntaggedReasoning: true);
+
+        string output = PushAll(filter, 
+            "The user is asking me to answer questions. Let me look at the screenshot. Location name in Russian is \"Каменный сад\".");
+
+        output.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void QwenThoughtsAndAnswerWithSourcesRead()
+    {
+        StreamingAnswerFilter filter = new(suppressUntaggedReasoning: true);
+
+        string output = PushAll(filter, 
+            "The user is asking me to answer the questions presented in the screenshot. Let me analyze whats shown in the image.",
+            "\nИсточники прочитаны\n",
+            "На скриншоте нет текстовых вопросов...");
+
+        output.Should().Be("На скриншоте нет текстовых вопросов...");
+    }
+
+    [Fact]
+    public void QwenDirectTransitionThoughtsAndAnswer()
+    {
+        StreamingAnswerFilter filter = new(suppressUntaggedReasoning: true);
+
+        string output = PushAll(filter, 
+            "The user is asking me to answer questions presented in the screenshot. Let me look at the screenshot carefully.",
+            "\n",
+            "📋 Краткая справка по репозиторию PrgramSpis (ScreenMind)");
+
+        output.Should().Be("📋 Краткая справка по репозиторию PrgramSpis (ScreenMind)");
+    }
+
+    [Fact]
+    public void QwenThoughtsContainingRussianWordsAreIgnored()
+    {
+        StreamingAnswerFilter filter = new(suppressUntaggedReasoning: true);
+
+        string output = PushAll(filter, 
+            "The user is asking me to answer questions presented in the screenshot. Let me look at the screenshot carefully.",
+            "\nThe screenshot shows a Minecraft modded interface showing a \"Беспроводный монитор автокрафта\" (Wireless Crafting Monitor).",
+            "\n",
+            "📋 Краткая справка по репозиторию PrgramSpis (ScreenMind)");
+
+        output.Should().Be("📋 Краткая справка по репозиторию PrgramSpis (ScreenMind)");
+    }
+
+    [Fact]
+    public void QwenShortNonCyrillicAnswersAreAllowed()
+    {
+        StreamingAnswerFilter filter = new(suppressUntaggedReasoning: true);
+
+        string output = PushAll(filter, "16  \nQwen3.7");
+
+        output.Should().Be("16  \nQwen3.7");
     }
 
     private static string PushAll(StreamingAnswerFilter filter, params string[] chunks)

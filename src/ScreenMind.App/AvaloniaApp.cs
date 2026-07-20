@@ -129,59 +129,29 @@ public sealed class AvaloniaApp : Application
                         else if (e.RegistrationId == Prompt1HotkeyId)
                         {
                             var freshSettings = await settingsStore.LoadAsync(CancellationToken.None);
-                            if (string.IsNullOrWhiteSpace(freshSettings.Capture.BaseDefaultPrompt))
+                            string promptText = freshSettings.Hotkeys.PromptText1;
+                            if (!string.IsNullOrWhiteSpace(promptText))
                             {
-                                freshSettings.Capture.BaseDefaultPrompt = freshSettings.Capture.DefaultPrompt;
+                                await compactOverlayService.ShowAsync(new CaptureTarget.MonitorWithCursor(), promptText, CancellationToken.None);
                             }
-                            string basePrompt = string.IsNullOrWhiteSpace(freshSettings.Capture.BaseDefaultPrompt)
-                                ? "What is on my screen?"
-                                : freshSettings.Capture.BaseDefaultPrompt;
-
-                            string newPrompt = freshSettings.Capture.DefaultPrompt == freshSettings.Hotkeys.PromptText1
-                                ? basePrompt
-                                : freshSettings.Hotkeys.PromptText1;
-
-                            freshSettings.Capture.DefaultPrompt = newPrompt;
-                            await settingsStore.SaveAsync(freshSettings, CancellationToken.None);
-                            chatWindowService.SetDefaultPrompt(newPrompt);
                         }
                         else if (e.RegistrationId == Prompt2HotkeyId)
                         {
                             var freshSettings = await settingsStore.LoadAsync(CancellationToken.None);
-                            if (string.IsNullOrWhiteSpace(freshSettings.Capture.BaseDefaultPrompt))
+                            string promptText = freshSettings.Hotkeys.PromptText2;
+                            if (!string.IsNullOrWhiteSpace(promptText))
                             {
-                                freshSettings.Capture.BaseDefaultPrompt = freshSettings.Capture.DefaultPrompt;
+                                await compactOverlayService.ShowAsync(new CaptureTarget.MonitorWithCursor(), promptText, CancellationToken.None);
                             }
-                            string basePrompt = string.IsNullOrWhiteSpace(freshSettings.Capture.BaseDefaultPrompt)
-                                ? "What is on my screen?"
-                                : freshSettings.Capture.BaseDefaultPrompt;
-
-                            string newPrompt = freshSettings.Capture.DefaultPrompt == freshSettings.Hotkeys.PromptText2
-                                ? basePrompt
-                                : freshSettings.Hotkeys.PromptText2;
-
-                            freshSettings.Capture.DefaultPrompt = newPrompt;
-                            await settingsStore.SaveAsync(freshSettings, CancellationToken.None);
-                            chatWindowService.SetDefaultPrompt(newPrompt);
                         }
                         else if (e.RegistrationId == Prompt3HotkeyId)
                         {
                             var freshSettings = await settingsStore.LoadAsync(CancellationToken.None);
-                            if (string.IsNullOrWhiteSpace(freshSettings.Capture.BaseDefaultPrompt))
+                            string promptText = freshSettings.Hotkeys.PromptText3;
+                            if (!string.IsNullOrWhiteSpace(promptText))
                             {
-                                freshSettings.Capture.BaseDefaultPrompt = freshSettings.Capture.DefaultPrompt;
+                                await compactOverlayService.ShowAsync(new CaptureTarget.MonitorWithCursor(), promptText, CancellationToken.None);
                             }
-                            string basePrompt = string.IsNullOrWhiteSpace(freshSettings.Capture.BaseDefaultPrompt)
-                                ? "What is on my screen?"
-                                : freshSettings.Capture.BaseDefaultPrompt;
-
-                            string newPrompt = freshSettings.Capture.DefaultPrompt == freshSettings.Hotkeys.PromptText3
-                                ? basePrompt
-                                : freshSettings.Hotkeys.PromptText3;
-
-                            freshSettings.Capture.DefaultPrompt = newPrompt;
-                            await settingsStore.SaveAsync(freshSettings, CancellationToken.None);
-                            chatWindowService.SetDefaultPrompt(newPrompt);
                         }
                         else if (e.RegistrationId == EmergencyExitHotkeyId)
                         {

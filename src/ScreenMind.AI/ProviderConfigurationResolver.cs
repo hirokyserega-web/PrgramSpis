@@ -150,7 +150,9 @@ public sealed class ProviderConfigurationResolver
     private static bool IsQwen(AiProfile profile, string modelId)
     {
         return profile.Id.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)
-            || modelId.StartsWith("qwen", StringComparison.OrdinalIgnoreCase);
+            || modelId.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)
+            || modelId.StartsWith("qwq", StringComparison.OrdinalIgnoreCase)
+            || modelId.StartsWith("qvq", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsDeepseek(AiProfile profile, string modelId)

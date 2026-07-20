@@ -420,7 +420,6 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
                     bodyObj["parent_id"] = request.Conversation.CurrentParentId;
                 }
             }
-
         }
         else
         {
@@ -505,7 +504,9 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
     private static bool IsManagedQwenProfile(AiProfile profile, ProviderRuntimeConfiguration configuration)
         => profile.ProviderId.Equals("openai-compatible", StringComparison.OrdinalIgnoreCase)
             && (profile.Id.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)
-                || configuration.ModelId.StartsWith("qwen", StringComparison.OrdinalIgnoreCase))
+                || configuration.ModelId.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)
+                || configuration.ModelId.StartsWith("qwq", StringComparison.OrdinalIgnoreCase)
+                || configuration.ModelId.StartsWith("qvq", StringComparison.OrdinalIgnoreCase))
             && configuration.BaseUri.IsLoopback
             && configuration.BaseUri.AbsolutePath.Trim('/').StartsWith("api", StringComparison.OrdinalIgnoreCase);
 
