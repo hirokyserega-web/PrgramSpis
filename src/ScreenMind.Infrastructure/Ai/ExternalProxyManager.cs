@@ -748,58 +748,74 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             return;
         }
 
-        string helper =
-            "function emitQwenDelta(delta, onChunk) {" + nl +
-            "    if (typeof onChunk !== 'function' || !delta) return;" + nl +
-            "    const phase = typeof delta.phase === 'string' ? delta.phase.toLowerCase() : '';" + nl +
-            "    const reasoning = delta.reasoning_content ?? delta.reasoning ?? delta.thinking;" + nl +
-            "    if (typeof reasoning === 'string' && reasoning.length > 0) onChunk(reasoning, 'reasoning');" + nl +
-            "    if (typeof delta.content === 'string' && delta.content.length > 0) {" + nl +
-            "        onChunk(delta.content, phase === 'think' || phase === 'thinking' || phase === 'reasoning' ? 'reasoning' : 'content');" + nl +
-            "    }" + nl +
-            "}" + nl + nl;
+        string helper = string.Join(nl, new[]
+        {
+            "function emitQwenDelta(delta, onChunk) {",
+            "    if (typeof onChunk !== 'function' || !delta) return;",
+            "    const phase = typeof delta.phase === 'string' ? delta.phase.toLowerCase() : '';",
+            "    const reasoning = delta.reasoning_content ?? delta.reasoning ?? delta.thinking;",
+            "    if (typeof reasoning === 'string' && reasoning.length > 0) onChunk(reasoning, 'reasoning');",
+            "    if (typeof delta.content === 'string' && delta.content.length > 0) {",
+            "        onChunk(delta.content, phase === 'think' || phase === 'thinking' || phase === 'reasoning' ? 'reasoning' : 'content');",
+            "    }",
+            "}",
+            "",
+            ""
+        });
         chat = chat.Insert(parserIndex, helper);
 
-        string oldNode = """                        if (delta && delta.content) {
-                            fullContent += delta.content;
-                            if (typeof onChunk === 'function') {
-                                onChunk(delta.content);
-                                hasStreamedChunks = true;
-                            }
-                        }
-""";
-        string newNode = """                        if (delta) {
-                            if (typeof delta.content === 'string' && delta.content.length > 0) {
-                                const phase = typeof delta.phase === 'string' ? delta.phase.toLowerCase() : '';
-                                if (phase === 'think' || phase === 'thinking' || phase === 'reasoning') {
-                                    fullReasoning += delta.content;
-                                } else {
-                                    fullContent += delta.content;
-                                }
-                            }
-                            if (typeof delta.reasoning_content === 'string') fullReasoning += delta.reasoning_content;
-                            if (typeof delta.reasoning === 'string') fullReasoning += delta.reasoning;
-                            if (typeof delta.thinking === 'string') fullReasoning += delta.thinking;
-                            const emitted = typeof onChunk === 'function'
-                                && ((typeof delta.content === 'string' && delta.content.length > 0)
-                                    || (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0)
-                                    || (typeof delta.reasoning === 'string' && delta.reasoning.length > 0)
-                                    || (typeof delta.thinking === 'string' && delta.thinking.length > 0));
-                            emitQwenDelta(delta, onChunk);
-                            if (emitted) hasStreamedChunks = true;
-                        }
-"""
-        if oldNode not in chat:
-            return
-        chat = chat.replace("        let fullContent = '';" + nl, "        let fullContent = '';" + nl + "        let fullReasoning = '';" + nl, 1)
-        chat = chat.replace(oldNode.replace('\n', nl), newNode.replace('\n', nl), 1)
-        chat = chat.replace("message: { role: 'assistant', content: fullContent }," + nl, "message: { role: 'assistant', content: fullContent, ...(fullReasoning ? { reasoning_content: fullReasoning } : {}) }," + nl, 1)
+        string oldNode = string.Join(nl, new[]
+        {
+            "                        if (delta && delta.content) {",
+            "                            fullContent += delta.content;",
+            "                            if (typeof onChunk === 'function') {",
+            "                                onChunk(delta.content);",
+            "                                hasStreamedChunks = true;",
+            "                            }",
+            "                        }",
+            ""
+        });
+        string newNode = string.Join(nl, new[]
+        {
+            "                        if (delta) {",
+            "                            if (typeof delta.content === 'string' && delta.content.length > 0) {",
+            "                                const phase = typeof delta.phase === 'string' ? delta.phase.toLowerCase() : '';",
+            "                                if (phase === 'think' || phase === 'thinking' || phase === 'reasoning') {",
+            "                                    fullReasoning += delta.content;",
+            "                                } else {",
+            "                                    fullContent += delta.content;",
+            "                                }",
+            "                            }",
+            "                            if (typeof delta.reasoning_content === 'string') fullReasoning += delta.reasoning_content;",
+            "                            if (typeof delta.reasoning === 'string') fullReasoning += delta.reasoning;",
+            "                            if (typeof delta.thinking === 'string') fullReasoning += delta.thinking;",
+            "                            const emitted = typeof onChunk === 'function'",
+            "                                && ((typeof delta.content === 'string' && delta.content.length > 0)",
+            "                                    || (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0)",
+            "                                    || (typeof delta.reasoning === 'string' && delta.reasoning.length > 0)",
+            "                                    || (typeof delta.thinking === 'string' && delta.thinking.length > 0));",
+            "                            emitQwenDelta(delta, onChunk);",
+            "                            if (emitted) hasStreamedChunks = true;",
+            "                        }",
+            ""
+        });
+        if (!chat.Contains(oldNode, StringComparison.Ordinal))
+        {
+            return;
+        }
+        chat = chat.Replace("        let fullContent = '';" + nl, "        let fullContent = '';" + nl + "        let fullReasoning = '';" + nl, StringComparison.Ordinal);
+        chat = chat.Replace(oldNode, newNode, StringComparison.Ordinal);
+        chat = chat.Replace("message: { role: 'assistant', content: fullContent }," + nl, "message: { role: 'assistant', content: fullContent, ...(fullReasoning ? { reasoning_content: fullReasoning } : {}) }," + nl, StringComparison.Ordinal);
 
-        const routesHelper =
-            "function writeQwenDeltaSse(res, mappedModel, chunk, kind) {" + nl +
-            "    const delta = kind === 'reasoning' ? { reasoning_content: chunk } : { content: chunk };" + nl +
-            "    res.write('data: ' + JSON.stringify({ id: 'chatcmpl-stream', object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: mappedModel || DEFAULT_MODEL, choices: [{ index: 0, delta, finish_reason: null }] }) + '\n\n');" + nl +
-            "}" + nl + nl;
+        string routesHelper = string.Join(nl, new[]
+        {
+            "function writeQwenDeltaSse(res, mappedModel, chunk, kind) {",
+            "    const delta = kind === 'reasoning' ? { reasoning_content: chunk } : { content: chunk };",
+            "    res.write('data: ' + JSON.stringify({ id: 'chatcmpl-stream', object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: mappedModel || DEFAULT_MODEL, choices: [{ index: 0, delta, finish_reason: null }] }) + '\\n\\n');",
+            "}",
+            "",
+            ""
+        });
         const routeMarker = "function writeOpenAIUsageSse(res, base, usage = null) {";
         int routeIndex = routes.IndexOf(routeMarker, StringComparison.Ordinal);
         if (routeIndex < 0)
@@ -807,32 +823,44 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             return;
         }
         routes = routes.Insert(routeIndex, routesHelper);
-        string oldCallback = """streamingCallback = (chunk) => {
-                        hasStreamedChunks = true;
-                        writeSse({
-""";
-        string newCallback = """streamingCallback = (chunk, kind = 'content') => {
-                        hasStreamedChunks = true;
-                        if (kind === 'reasoning') {
-                            writeQwenDeltaSse(res, mappedModel, chunk, kind);
-                            return;
-                        }
-                        writeSse({
-""";
-        routes = routes.Replace(oldCallback.Replace('\n', nl), newCallback.Replace('\n', nl), StringComparison.Ordinal);
-        string oldCallback2 = """streamingCallback = (chunk) => {
-                        hasStreamedChunks = true;
-                        // OpenWebUI не нуждается в role в чанках - только контент
-""";
-        string newCallback2 = """streamingCallback = (chunk, kind = 'content') => {
-                        hasStreamedChunks = true;
-                        if (kind === 'reasoning') {
-                            writeQwenDeltaSse(res, mappedModel, chunk, kind);
-                            return;
-                        }
-                        // OpenWebUI не нуждается в role в чанках - только контент
-""";
-        routes = routes.Replace(oldCallback2.Replace('\n', nl), newCallback2.Replace('\n', nl), StringComparison.Ordinal);
+        string oldCallback = string.Join(nl, new[]
+        {
+            "streamingCallback = (chunk) => {",
+            "                        hasStreamedChunks = true;",
+            "                        writeSse({",
+            ""
+        });
+        string newCallback = string.Join(nl, new[]
+        {
+            "streamingCallback = (chunk, kind = 'content') => {",
+            "                        hasStreamedChunks = true;",
+            "                        if (kind === 'reasoning') {",
+            "                            writeQwenDeltaSse(res, mappedModel, chunk, kind);",
+            "                            return;",
+            "                        }",
+            "                        writeSse({",
+            ""
+        });
+        routes = routes.Replace(oldCallback, newCallback, StringComparison.Ordinal);
+        string oldCallback2 = string.Join(nl, new[]
+        {
+            "streamingCallback = (chunk) => {",
+            "                        hasStreamedChunks = true;",
+            "                        // OpenWebUI не нуждается в role в чанках - только контент",
+            ""
+        });
+        string newCallback2 = string.Join(nl, new[]
+        {
+            "streamingCallback = (chunk, kind = 'content') => {",
+            "                        hasStreamedChunks = true;",
+            "                        if (kind === 'reasoning') {",
+            "                            writeQwenDeltaSse(res, mappedModel, chunk, kind);",
+            "                            return;",
+            "                        }",
+            "                        // OpenWebUI не нуждается в role в чанках - только контент",
+            ""
+        });
+        routes = routes.Replace(oldCallback2, newCallback2, StringComparison.Ordinal);
         if (string.Equals(chat, originalChat, StringComparison.Ordinal))
         {
             return;
