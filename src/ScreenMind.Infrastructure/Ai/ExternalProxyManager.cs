@@ -816,7 +816,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             "",
             ""
         });
-        const routeMarker = "function writeOpenAIUsageSse(res, base, usage = null) {";
+        const string routeMarker = "function writeOpenAIUsageSse(res, base, usage = null) {";
         int routeIndex = routes.IndexOf(routeMarker, StringComparison.Ordinal);
         if (routeIndex < 0)
         {
