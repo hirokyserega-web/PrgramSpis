@@ -22,25 +22,36 @@ jobs:
       with:
         dotnet-version: '8.0.x'
 
-    - name: Publish Application (Self-Contained)
-      run: |
-        dotnet publish src/ScreenMind.App/ScreenMind.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:IncludeNativeLibrariesForSelfExtract=true -o src/ScreenMind.App/bin/Release/net8.0-windows10.0.19041.0/publish
+    - name: Publish Single-File Application
+      run: >-
+        dotnet publish src/ScreenMind.App/ScreenMind.App.csproj
+        -c Release
+        -r win-x64
+        --self-contained true
+        -p:PublishSingleFile=true
+        -p:PublishReadyToRun=true
+        -p:IncludeNativeLibrariesForSelfExtract=true
+        -p:DebugType=None
+        -p:DebugSymbols=false
+        -o artifacts/ScreenMind-win-x64
 
-    - name: Compile Inno Setup Installer
-      run: |
-        iscc installer/setup.iss
-
-    - name: Create Zip Archive
+    - name: Verify Single-File Output
       shell: pwsh
       run: |
-        Compress-Archive -Path src/ScreenMind.App/bin/Release/net8.0-windows10.0.19041.0/publish/* -DestinationPath installer/SystemServiceHost-win-x64.zip
+        $publishDir = "artifacts/ScreenMind-win-x64"
+        $exe = Join-Path $publishDir "SystemServiceHost.exe"
+        if (-not (Test-Path $exe)) { throw "Expected executable was not produced: $exe" }
+        $files = @(Get-ChildItem -Path $publishDir -File)
+        if ($files.Count -ne 1 -or $files[0].Name -ne "SystemServiceHost.exe") {
+          $files | Format-Table Name, Length
+          throw "Publish output is not a single EXE file."
+        }
+        if ($files[0].Length -le 0) { throw "The published EXE is empty." }
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: |
-          installer/SystemServiceHostSetup.exe
-          installer/SystemServiceHost-win-x64.zip
+        files: artifacts/ScreenMind-win-x64/SystemServiceHost.exe
         draft: false
         prerelease: false
       env:
