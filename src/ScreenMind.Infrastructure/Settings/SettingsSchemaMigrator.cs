@@ -119,16 +119,25 @@ public static class SettingsSchemaMigrator
     {
         string[] validModels =
         [
-            "opus-4.6",
             "sonnet-4.6",
-            "haiku-4.5",
+            "sonnet-5",
+            "opus-4.7",
+            "opus-4.8",
+            "fable-5",
+            "gemini-3.1-pro",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
             "gpt-5.2",
             "gpt-5.4",
-            "gemini-2.5-flash",
-            "gemini-3-flash",
-            "minimax-m2.5",
-            "researcher",
-            "fast-researcher",
+            "gpt-5.5",
+            "grok-4.3",
+            "grok-4.5",
+            "grok-build-0.1",
+            "gemini-3.5-flash",
+            "kimi-k2.6",
+            "kimi-k2.7-code",
+            "deepseek-v4-pro",
+            "glm-5.2",
         ];
 
         foreach (int index in Enumerable.Range(0, profiles.Items.Count))

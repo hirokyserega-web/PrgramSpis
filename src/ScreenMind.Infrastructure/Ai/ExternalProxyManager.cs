@@ -1373,6 +1373,8 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         JsonElement chosenSpace = default;
         string spaceId = string.Empty;
         string spaceViewId = string.Empty;
+        bool chosenAiEnabled = false;
+        bool chosenPaid = false;
 
         if (pointers.ValueKind != JsonValueKind.Array)
         {
@@ -1385,10 +1387,17 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             if (string.IsNullOrWhiteSpace(candidateId)) continue;
             JsonElement candidate = GetProperty(spaces, candidateId);
             if (candidate.ValueKind == JsonValueKind.Undefined) continue;
-            spaceId = candidateId;
-            spaceViewId = FindString(pointer, "id") ?? string.Empty;
-            chosenSpace = candidate;
-            break;
+            bool aiEnabled = !FindBoolean(candidate, "disable_ai_feature");
+            string candidatePlan = FindString(candidate, "plan_type") ?? string.Empty;
+            bool paid = !string.Equals(candidatePlan, "free", StringComparison.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(spaceId) || (aiEnabled && !chosenAiEnabled) || (aiEnabled == chosenAiEnabled && paid && !chosenPaid))
+            {
+                spaceId = candidateId;
+                spaceViewId = FindString(pointer, "id") ?? string.Empty;
+                chosenSpace = candidate;
+                chosenAiEnabled = aiEnabled;
+                chosenPaid = paid;
+            }
         }
 
         if (string.IsNullOrWhiteSpace(spaceId))
@@ -1438,6 +1447,22 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             }
         }
         return default;
+    }
+
+    private static bool FindBoolean(JsonElement element, string name)
+    {
+        if (element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out JsonElement direct) && direct.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            return direct.GetBoolean();
+        }
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty property in element.EnumerateObject())
+            {
+                if (FindBoolean(property.Value, name)) return true;
+            }
+        }
+        return false;
     }
 
     private static string? FindString(JsonElement element, string name)
