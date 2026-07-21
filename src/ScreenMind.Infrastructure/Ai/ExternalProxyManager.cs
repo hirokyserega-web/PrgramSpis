@@ -123,7 +123,7 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
             await InstallNotionProxyAsync(dir, cancellationToken).ConfigureAwait(false);
             if (!IsInstalledDirectory(dir))
             {
-                throw new InvalidOperationException($"Proxy {proxyName} was installed, but notion-manager.exe was not found.");
+                throw new InvalidOperationException($"Proxy {proxyName} was installed, but the Notion manager executable was not found.");
             }
             return;
         }
@@ -384,16 +384,25 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
                 throw new InvalidOperationException("Notion token_v2 is required.");
             }
 
-            await PrepareNotionAccountAsync(dir, token, cancellationToken).ConfigureAwait(false);
+            string accountsDir = Path.Combine(dir, "accounts");
+            Directory.CreateDirectory(accountsDir);
+            try
+            {
+                await PrepareNotionAccountAsync(dir, token, cancellationToken).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException exception) when (exception.Message.Contains("discovery", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Notion token_v2 is invalid or expired. Copy a fresh token_v2 cookie from a logged-in Notion session.", exception);
+            }
+
             string apiKey = string.IsNullOrWhiteSpace(credentials.ApiMasterKey)
                 ? DeriveNotionApiKey(token)
                 : credentials.ApiMasterKey;
             SetEnvironmentVariableIfPresent(psi, "API_KEY", apiKey);
             SetEnvironmentVariableIfPresent(psi, "NOTION_TOKEN_V2", token);
-            psi.EnvironmentVariables["ACCOUNTS_DIR"] = Path.Combine(dir, "accounts");
+            psi.EnvironmentVariables["ACCOUNTS_DIR"] = accountsDir;
             psi.EnvironmentVariables["TOKEN_FILE"] = Path.Combine(dir, "token.txt");
             psi.EnvironmentVariables["PORT"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            Directory.CreateDirectory(Path.Combine(dir, "accounts"));
             File.WriteAllText(Path.Combine(dir, "token.txt"), token);
         }
 
@@ -559,19 +568,31 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         try
         {
             bool isNotion = proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase);
-            string url = isNotion
-                ? $"http://localhost:{port}/"
-                : $"http://localhost:{port}/api/health";
+            string[] urls = isNotion
+                ? [$"http://127.0.0.1:{port}/health", $"http://127.0.0.1:{port}/"]
+                : [$"http://127.0.0.1:{port}/api/health"];
 
-            HttpResponseMessage response;
-            try
+            HttpResponseMessage? response = null;
+            foreach (string url in urls)
             {
-                response = await client.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    response = await client.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        break;
+                    }
+                    response.Dispose();
+                    response = null;
+                }
+                catch when (isNotion)
+                {
+                }
             }
-            catch
+
+            if (response is null)
             {
-                url = $"http://localhost:{port}/health";
-                response = await client.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                return false;
             }
 
             using (response)
@@ -588,23 +609,28 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
                 if (root.TryGetProperty("service", out JsonElement serviceProp))
                 {
                     string? serviceName = serviceProp.GetString();
-                    if (!string.Equals(serviceName, proxyName, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(serviceName, proxyName, StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(serviceName, "notion-manager", StringComparison.OrdinalIgnoreCase))
                     {
                         return false;
                     }
                 }
 
-                if (root.TryGetProperty("ok", out JsonElement okProp) && okProp.GetBoolean())
+                if (root.TryGetProperty("ok", out JsonElement okProp) && okProp.ValueKind == JsonValueKind.True)
                 {
                     return true;
                 }
 
-                if (proxyName.Equals("notion-2api", StringComparison.OrdinalIgnoreCase)
-                    && root.TryGetProperty("message", out JsonElement messageProp)
-                    && messageProp.ValueKind == JsonValueKind.String)
+                if (root.TryGetProperty("status", out JsonElement statusProp)
+                    && statusProp.ValueKind == JsonValueKind.String
+                    && string.Equals(statusProp.GetString(), "ok", StringComparison.OrdinalIgnoreCase))
                 {
-                    return messageProp.GetString()?.Contains("运行正常", StringComparison.OrdinalIgnoreCase) == true
-                        || messageProp.GetString()?.Contains("running", StringComparison.OrdinalIgnoreCase) == true;
+                    return true;
+                }
+
+                if (isNotion && root.ValueKind == JsonValueKind.Object && root.EnumerateObject().Any())
+                {
+                    return true;
                 }
             }
         }
@@ -1011,7 +1037,11 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         string binaryPath = Path.Combine(dir, OperatingSystem.IsWindows() ? "notion-manager.exe" : "notion-manager");
         if (File.Exists(binaryPath))
         {
-            return;
+            if (new FileInfo(binaryPath).Length > 0)
+            {
+                return;
+            }
+            File.Delete(binaryPath);
         }
 
         string assetUrl = OperatingSystem.IsWindows()

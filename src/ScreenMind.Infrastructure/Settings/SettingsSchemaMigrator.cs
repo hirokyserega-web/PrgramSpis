@@ -75,6 +75,8 @@ public static class SettingsSchemaMigrator
             MergeDefaultProfiles(normalized.Profiles);
         }
 
+        NormalizeNotionProfiles(normalized.Profiles);
+
         normalized.SchemaVersion = ScreenMindSettings.CurrentSchemaVersion;
 
         return normalized;
@@ -109,6 +111,43 @@ public static class SettingsSchemaMigrator
             {
                 profiles.Items.Add(defaultProfile);
             }
+        }
+    }
+
+
+    private static void NormalizeNotionProfiles(ProfileSettings profiles)
+    {
+        string[] validModels =
+        [
+            "opus-4.6",
+            "sonnet-4.6",
+            "haiku-4.5",
+            "gpt-5.2",
+            "gpt-5.4",
+            "gemini-2.5-flash",
+            "gemini-3-flash",
+            "minimax-m2.5",
+            "researcher",
+            "fast-researcher",
+        ];
+
+        foreach (int index in Enumerable.Range(0, profiles.Items.Count))
+        {
+            AiProfile profile = profiles.Items[index];
+            if (!profile.Id.StartsWith("notion", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string model = profile.ModelId is null or ""
+                ? "sonnet-4.6"
+                : profile.ModelId;
+            profiles.Items[index] = profile with
+            {
+                DisplayName = "Notion AI (notion-manager)",
+                ProviderId = "openai-compatible",
+                ModelId = model,
+            };
         }
     }
 

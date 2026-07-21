@@ -482,7 +482,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 break;
             case "notion":
                 models.AddRange(notionModels);
-                models.Add("custom");
                 break;
             case "openai-compatible":
                 models.Add("custom");
@@ -576,7 +575,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             if (SelectedProviderIndex >= 0 && SelectedProviderIndex < ProviderIds.Count)
             {
                 string prov = ProviderIds[SelectedProviderIndex];
-                if (prov == "qwen" || prov == "deepseek" || prov == "kimi")
+                if (prov == "qwen" || prov == "deepseek" || prov == "kimi" || prov == "notion")
                 {
                     providerId = "openai-compatible";
                 }
@@ -1040,10 +1039,26 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            string selectedModel = SelectedProviderIndex >= 0
+                && SelectedModelIndex >= 0
+                && SelectedModelIndex < AvailableModels.Count
+                ? AvailableModels[SelectedModelIndex]
+                : string.Empty;
             notionModels = discovered;
             if (SelectedProviderIndex >= 0 && SelectedProviderIndex < ProviderIds.Count && ProviderIds[SelectedProviderIndex] == "notion")
             {
-                UpdateAvailableModelsList();
+                isSyncingSelection = true;
+                try
+                {
+                    UpdateAvailableModelsList();
+                    int selectedIndex = AvailableModels.IndexOf(selectedModel);
+                    SelectedModelIndex = selectedIndex >= 0 ? selectedIndex : 0;
+                    IsCustomModelVisible = false;
+                }
+                finally
+                {
+                    isSyncingSelection = false;
+                }
             }
         }
         catch
@@ -1129,7 +1144,7 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         settings.Capture.KeepSessionHistory = KeepSessionHistory;
         settings.Privacy.WarnBeforeCloudUpload = false;
 
-        settings.Profiles.Items = AvailableProfiles;
+        settings.Profiles.Items = AvailableProfiles.ToList();
         if (SelectedProfileIndex >= 0 && SelectedProfileIndex < AvailableProfiles.Count)
         {
             AiProfile selectedProfile = AvailableProfiles[SelectedProfileIndex];
