@@ -1334,6 +1334,11 @@ public sealed class ExternalProxyManager : IExternalProxyManager, IDisposable
         using HttpRequestMessage request = new(HttpMethod.Post, "https://www.notion.so/api/v3/loadUserContent");
         request.Headers.TryAddWithoutValidation("Cookie", "token_v2=" + token);
         request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/146 Safari/537.36");
+        request.Headers.TryAddWithoutValidation("Origin", "https://www.notion.so");
+        request.Headers.TryAddWithoutValidation("Referer", "https://www.notion.so/");
+        request.Headers.TryAddWithoutValidation("x-notion-active-user-header", string.Empty);
+        request.Headers.TryAddWithoutValidation("x-notion-space-id", string.Empty);
+        request.Headers.TryAddWithoutValidation("notion-client-version", "23.13.20260313.1423");
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
 
