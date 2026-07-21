@@ -246,7 +246,17 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
             throw new AiProviderException(ProviderErrorMapper.FromHttpStatus(response.StatusCode, Id));
         }
 
-        return Array.Empty<AiModel>();
+        using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+        if (!document.RootElement.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<AiModel>();
+        }
+
+        return data.EnumerateArray()
+            .Select(item => item.TryGetProperty("id", out JsonElement id) ? id.GetString() : null)
+            .Where(model => !string.IsNullOrWhiteSpace(model))
+            .Select(model => new AiModel(model!, model!, IsVisionModel(model!), true))
+            .ToArray();
     }
 
     public async Task TestConnectionAsync(CancellationToken cancellationToken)
@@ -505,6 +515,17 @@ public sealed partial class OpenAiCompatibleProvider : IAiProvider
 
     private static bool IsDeepseekModel(string modelId)
         => modelId.StartsWith("deepseek", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsVisionModel(string modelId)
+        => modelId.Contains("vision", StringComparison.OrdinalIgnoreCase)
+            || modelId.Contains("vl", StringComparison.OrdinalIgnoreCase)
+            || modelId.Contains("image", StringComparison.OrdinalIgnoreCase)
+            || modelId.Contains("gemini", StringComparison.OrdinalIgnoreCase)
+            || modelId.Contains("gpt-4o", StringComparison.OrdinalIgnoreCase)
+            || modelId.Contains("gpt-5", StringComparison.OrdinalIgnoreCase)
+            || modelId.Contains("sonnet", StringComparison.OrdinalIgnoreCase)
+            || modelId.Contains("opus", StringComparison.OrdinalIgnoreCase)
+            || modelId.Contains("haiku", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsManagedNotionProfile(AiProfile profile, ProviderRuntimeConfiguration configuration)
         => profile.ProviderId.Equals("openai-compatible", StringComparison.OrdinalIgnoreCase)
